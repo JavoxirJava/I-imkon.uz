@@ -167,10 +167,11 @@ router.get("/:id/analytics", async (req, res) => {
             ? pool_1.pool.query(`SELECT score, finished_at FROM test_attempts WHERE test_id = ANY($1) AND finished_at IS NOT NULL`, [testIds])
             : Promise.resolve({ rows: [] }),
     ]);
-    const attempts = attemptsRes.rows;
+    const attempts = attemptsRes.rows
+        .map((a) => ({ ...a, score: a.score !== null ? Number(a.score) : null }));
     const validAttempts = attempts.filter((a) => a.score !== null);
     const avgScore = validAttempts.length > 0
-        ? Math.round(validAttempts.reduce((s, a) => s + (a.score ?? 0), 0) / validAttempts.length)
+        ? Math.round(validAttempts.reduce((s, a) => s + a.score, 0) / validAttempts.length)
         : null;
     const last7Days = Array.from({ length: 7 }, (_, i) => {
         const d = new Date();
@@ -179,7 +180,7 @@ router.get("/:id/analytics", async (req, res) => {
     });
     const attemptsByDay = last7Days.map((day) => ({
         day: day.slice(5),
-        count: attempts.filter((a) => a.finished_at?.startsWith(day)).length,
+        count: attempts.filter((a) => a.finished_at && new Date(a.finished_at).toISOString().startsWith(day)).length,
     }));
     const scoreDistribution = [
         { label: "A'lo (86–100%)", min: 86, max: 100 },

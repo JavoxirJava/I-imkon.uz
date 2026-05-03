@@ -3,13 +3,15 @@ import { z } from "zod";
 import { pool } from "../db/pool";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/role";
+import { ah } from "../utils/asyncHandler";
+import { logger } from "../utils/logger";
 import type { AuthRequest } from "../types";
 
 const router = Router();
 router.use(requireAuth);
 
 // GET /lectures?class_id=&teacher_id=
-router.get("/", async (req: AuthRequest, res) => {
+router.get("/", ah(async (req, res) => {
   const { class_id, teacher_id } = req.query as Record<string, string>;
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -33,10 +35,10 @@ router.get("/", async (req: AuthRequest, res) => {
     params
   );
   res.json(rows);
-});
+}));
 
 // GET /lectures/:id
-router.get("/:id", async (req, res) => {
+router.get("/:id", ah(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT l.*, sub.name AS subject_name,
             c.grade, c.letter,
@@ -52,7 +54,7 @@ router.get("/:id", async (req, res) => {
   );
   if (!rows[0]) { res.status(404).json({ error: "Topilmadi" }); return; }
   res.json(rows[0]);
-});
+}));
 
 // POST /lectures
 const LectureSchema = z.object({
@@ -66,9 +68,15 @@ const LectureSchema = z.object({
   subtitle_source:  z.enum(["manual", "ai"]).optional(),
 });
 
-router.post("/", requireRole("teacher", "super_admin"), async (req: AuthRequest, res) => {
+router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
+  logger.req(req, "POST /lectures", { user: req.user?.sub, content_type: req.body?.content_type });
+
   const parsed = LectureSchema.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: parsed.error.errors[0]?.message }); return; }
+  if (!parsed.success) {
+    logger.warn("POST /lectures validation failed", { errors: parsed.error.errors, body: req.body });
+    res.status(400).json({ error: parsed.error.errors[0]?.message });
+    return;
+  }
   const d = parsed.data;
 
   // school_id from teacher assignments
@@ -78,12 +86,17 @@ router.post("/", requireRole("teacher", "super_admin"), async (req: AuthRequest,
   );
   const school_id = ta[0]?.school_id ?? null;
 
+  if (!school_id) {
+    logger.warn("POST /lectures: teacher has no school assignment", { user: req.user?.sub });
+  }
+
   const { rows } = await pool.query(
     `INSERT INTO lectures (creator_id, school_id, subject_id, class_id, title, description, content_type, file_url)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
     [req.user!.sub, school_id, d.subject_id, d.class_id ?? null, d.title, d.description ?? null, d.content_type, d.file_url]
   );
   const lectureId = rows[0].id;
+  logger.info("POST /lectures: created", { lectureId, user: req.user?.sub });
 
   if (d.subtitle_vtt_url) {
     await pool.query(
@@ -94,10 +107,10 @@ router.post("/", requireRole("teacher", "super_admin"), async (req: AuthRequest,
   }
 
   res.status(201).json({ id: lectureId });
-});
+}));
 
 // POST /lectures/:id/subtitles — upsert subtitle (used by Whisper API route)
-router.post("/:id/subtitles", async (req, res) => {
+router.post("/:id/subtitles", ah(async (req, res) => {
   const { vtt_url, language, source } = req.body as { vtt_url: string; language?: string; source?: string };
   if (!vtt_url) { res.status(400).json({ error: "vtt_url kerak" }); return; }
   await pool.query(
@@ -107,15 +120,15 @@ router.post("/:id/subtitles", async (req, res) => {
     [req.params.id, vtt_url, language ?? "uz", source ?? "ai"]
   );
   res.json({ ok: true });
-});
+}));
 
 // DELETE /lectures/:id
-router.delete("/:id", requireRole("teacher", "super_admin"), async (req: AuthRequest, res) => {
+router.delete("/:id", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
   await pool.query(
     "DELETE FROM lectures WHERE id = $1 AND (creator_id = $2 OR $3 = 'super_admin')",
     [req.params.id, req.user!.sub, req.user!.role]
   );
   res.json({ ok: true });
-});
+}));
 
 export default router;

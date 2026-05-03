@@ -42,26 +42,23 @@ router.get("/rooms", async (req, res) => {
     const { rows } = await pool_1.pool.query(query, [userId]);
     res.json(rows);
 });
-// POST /chat/rooms — xona yaratish (parent tomonidan)
+// POST /chat/rooms — xona yaratish (parent yoki teacher tomonidan)
 router.post("/rooms", async (req, res) => {
-    if (req.user.role !== "parent") {
-        res.status(403).json({ error: "Faqat ota-ona xona yarata oladi" });
-        return;
-    }
+    const role = req.user.role;
     const parsed = zod_1.z.object({
         teacher_id: zod_1.z.string().uuid(),
         student_id: zod_1.z.string().uuid(),
+        parent_id: zod_1.z.string().uuid().optional(),
     }).safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: "teacher_id va student_id kerak" });
         return;
     }
-    const { teacher_id, student_id } = parsed.data;
-    const parent_id = req.user.sub;
-    // Ota-ona o'sha bolaga biriktirilganmi
-    const { rows: link } = await pool_1.pool.query("SELECT 1 FROM parent_students WHERE parent_id = $1 AND student_id = $2", [parent_id, student_id]);
-    if (link.length === 0) {
-        res.status(403).json({ error: "Bu o'quvchiga ruxsat yo'q" });
+    const teacher_id = role === "teacher" ? req.user.sub : parsed.data.teacher_id;
+    const student_id = parsed.data.student_id;
+    const parent_id = role === "parent" ? req.user.sub : (parsed.data.parent_id ?? "");
+    if (!parent_id) {
+        res.status(400).json({ error: "parent_id kerak" });
         return;
     }
     const { rows } = await pool_1.pool.query(`INSERT INTO chat_rooms (parent_id, teacher_id, student_id)

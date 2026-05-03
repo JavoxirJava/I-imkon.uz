@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import "dotenv/config";
+import { logger } from "./utils/logger";
 
 import publicRouter      from "./routes/public";
 import authRouter        from "./routes/auth";
@@ -49,10 +50,17 @@ app.use("/classes",     classesRouter);
 app.use("/schools",     schoolsRouter);
 app.use("/leaderboard", leaderboardRouter);
 
-app.use((_req, res) => res.status(404).json({ error: "Topilmadi" }));
+app.use((req, res) => {
+  logger.warn("404 not found", { method: req.method, path: req.path });
+  res.status(404).json({ error: "Topilmadi" });
+});
 
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error(err);
+app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  logger.error("Unhandled error", err, {
+    method: req.method,
+    path: req.path,
+    body: req.body,
+  });
   res.status(500).json({ error: "Server xatosi" });
 });
 

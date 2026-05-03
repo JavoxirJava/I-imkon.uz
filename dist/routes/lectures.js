@@ -5,10 +5,12 @@ const zod_1 = require("zod");
 const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
 const role_1 = require("../middleware/role");
+const asyncHandler_1 = require("../utils/asyncHandler");
+const logger_1 = require("../utils/logger");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
 // GET /lectures?class_id=&teacher_id=
-router.get("/", async (req, res) => {
+router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
     const { class_id, teacher_id } = req.query;
     const conditions = [];
     const params = [];
@@ -33,9 +35,9 @@ router.get("/", async (req, res) => {
      ${where}
      ORDER BY l.created_at DESC`, params);
     res.json(rows);
-});
+}));
 // GET /lectures/:id
-router.get("/:id", async (req, res) => {
+router.get("/:id", (0, asyncHandler_1.ah)(async (req, res) => {
     const { rows } = await pool_1.pool.query(`SELECT l.*, sub.name AS subject_name,
             c.grade, c.letter,
             COALESCE(
@@ -51,7 +53,7 @@ router.get("/:id", async (req, res) => {
         return;
     }
     res.json(rows[0]);
-});
+}));
 // POST /lectures
 const LectureSchema = zod_1.z.object({
     subject_id: zod_1.z.string().uuid(),
@@ -63,9 +65,11 @@ const LectureSchema = zod_1.z.object({
     subtitle_vtt_url: zod_1.z.string().url().optional(),
     subtitle_source: zod_1.z.enum(["manual", "ai"]).optional(),
 });
-router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
+    logger_1.logger.req(req, "POST /lectures", { user: req.user?.sub, content_type: req.body?.content_type });
     const parsed = LectureSchema.safeParse(req.body);
     if (!parsed.success) {
+        logger_1.logger.warn("POST /lectures validation failed", { errors: parsed.error.errors, body: req.body });
         res.status(400).json({ error: parsed.error.errors[0]?.message });
         return;
     }
@@ -73,17 +77,21 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, 
     // school_id from teacher assignments
     const { rows: ta } = await pool_1.pool.query("SELECT school_id FROM teacher_assignments WHERE teacher_id = $1 LIMIT 1", [req.user.sub]);
     const school_id = ta[0]?.school_id ?? null;
+    if (!school_id) {
+        logger_1.logger.warn("POST /lectures: teacher has no school assignment", { user: req.user?.sub });
+    }
     const { rows } = await pool_1.pool.query(`INSERT INTO lectures (creator_id, school_id, subject_id, class_id, title, description, content_type, file_url)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [req.user.sub, school_id, d.subject_id, d.class_id ?? null, d.title, d.description ?? null, d.content_type, d.file_url]);
     const lectureId = rows[0].id;
+    logger_1.logger.info("POST /lectures: created", { lectureId, user: req.user?.sub });
     if (d.subtitle_vtt_url) {
         await pool_1.pool.query(`INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source) VALUES ($1,$2,'uz',$3)
        ON CONFLICT DO NOTHING`, [lectureId, d.subtitle_vtt_url, d.subtitle_source ?? "manual"]);
     }
     res.status(201).json({ id: lectureId });
-});
+}));
 // POST /lectures/:id/subtitles — upsert subtitle (used by Whisper API route)
-router.post("/:id/subtitles", async (req, res) => {
+router.post("/:id/subtitles", (0, asyncHandler_1.ah)(async (req, res) => {
     const { vtt_url, language, source } = req.body;
     if (!vtt_url) {
         res.status(400).json({ error: "vtt_url kerak" });
@@ -93,10 +101,10 @@ router.post("/:id/subtitles", async (req, res) => {
      VALUES ($1,$2,$3,$4)
      ON CONFLICT (lecture_id, language) DO UPDATE SET vtt_url=EXCLUDED.vtt_url, source=EXCLUDED.source`, [req.params.id, vtt_url, language ?? "uz", source ?? "ai"]);
     res.json({ ok: true });
-});
+}));
 // DELETE /lectures/:id
-router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
     await pool_1.pool.query("DELETE FROM lectures WHERE id = $1 AND (creator_id = $2 OR $3 = 'super_admin')", [req.params.id, req.user.sub, req.user.role]);
     res.json({ ok: true });
-});
+}));
 exports.default = router;

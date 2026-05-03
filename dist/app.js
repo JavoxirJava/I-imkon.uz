@@ -7,6 +7,7 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const helmet_1 = __importDefault(require("helmet"));
 require("dotenv/config");
+const logger_1 = require("./utils/logger");
 const public_1 = __importDefault(require("./routes/public"));
 const auth_1 = __importDefault(require("./routes/auth"));
 const users_1 = __importDefault(require("./routes/users"));
@@ -48,9 +49,16 @@ app.use("/subjects", subjects_1.default);
 app.use("/classes", classes_1.default);
 app.use("/schools", schools_1.default);
 app.use("/leaderboard", leaderboard_1.default);
-app.use((_req, res) => res.status(404).json({ error: "Topilmadi" }));
-app.use((err, _req, res, _next) => {
-    console.error(err);
+app.use((req, res) => {
+    logger_1.logger.warn("404 not found", { method: req.method, path: req.path });
+    res.status(404).json({ error: "Topilmadi" });
+});
+app.use((err, req, res, _next) => {
+    logger_1.logger.error("Unhandled error", err, {
+        method: req.method,
+        path: req.path,
+        body: req.body,
+    });
     res.status(500).json({ error: "Server xatosi" });
 });
 exports.default = app;

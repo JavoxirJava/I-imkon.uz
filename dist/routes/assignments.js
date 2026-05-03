@@ -5,9 +5,11 @@ const zod_1 = require("zod");
 const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
 const role_1 = require("../middleware/role");
+const asyncHandler_1 = require("../utils/asyncHandler");
+const logger_1 = require("../utils/logger");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
-router.get("/", async (req, res) => {
+router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
     const { teacher_id, class_id } = req.query;
     if (teacher_id) {
         const { rows } = await pool_1.pool.query(`SELECT a.*, sub.name AS subject_name FROM assignments a
@@ -24,8 +26,8 @@ router.get("/", async (req, res) => {
     else {
         res.status(400).json({ error: "teacher_id yoki class_id kerak" });
     }
-});
-router.get("/:id", async (req, res) => {
+}));
+router.get("/:id", (0, asyncHandler_1.ah)(async (req, res) => {
     const { rows } = await pool_1.pool.query(`SELECT a.*, sub.name AS subject_name FROM assignments a
      JOIN subjects sub ON sub.id = a.subject_id WHERE a.id=$1`, [req.params.id]);
     if (!rows[0]) {
@@ -33,7 +35,7 @@ router.get("/:id", async (req, res) => {
         return;
     }
     res.json(rows[0]);
-});
+}));
 const AssignmentSchema = zod_1.z.object({
     title: zod_1.z.string().min(1),
     description: zod_1.z.string().nullable().optional(),
@@ -43,9 +45,11 @@ const AssignmentSchema = zod_1.z.object({
     max_score: zod_1.z.number().int().positive().default(100),
     file_url: zod_1.z.string().url().nullable().optional(),
 });
-router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
+    logger_1.logger.req(req, "POST /assignments", { user: req.user?.sub });
     const parsed = AssignmentSchema.safeParse(req.body);
     if (!parsed.success) {
+        logger_1.logger.warn("POST /assignments validation failed", { errors: parsed.error.errors, body: req.body });
         res.status(400).json({ error: parsed.error.errors[0]?.message });
         return;
     }
@@ -57,23 +61,24 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, 
             d.deadline ?? null, d.max_score, d.file_url ?? null]);
         ids.push(rows[0].id);
     }
+    logger_1.logger.info("POST /assignments: created", { ids, user: req.user?.sub });
     res.status(201).json({ id: ids[0], ids });
-});
-router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+}));
+router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
     await pool_1.pool.query("DELETE FROM assignments WHERE id=$1 AND (teacher_id=$2 OR $3='super_admin')", [req.params.id, req.user.sub, req.user.role]);
     res.json({ ok: true });
-});
+}));
 // GET /assignments/:id/submissions
-router.get("/:id/submissions", (0, role_1.requireRole)("teacher", "director", "super_admin"), async (_req, res) => {
+router.get("/:id/submissions", (0, role_1.requireRole)("teacher", "director", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
     const { rows } = await pool_1.pool.query(`SELECT asub.*, u.first_name, u.last_name
      FROM assignment_submissions asub
      JOIN users u ON u.id = asub.student_id
      WHERE asub.assignment_id=$1
-     ORDER BY asub.submitted_at DESC`, [_req.params.id]);
+     ORDER BY asub.submitted_at DESC`, [req.params.id]);
     res.json(rows);
-});
+}));
 // POST /assignments/:id/submit (student)
-router.post("/:id/submit", (0, role_1.requireRole)("student"), async (req, res) => {
+router.post("/:id/submit", (0, role_1.requireRole)("student"), (0, asyncHandler_1.ah)(async (req, res) => {
     const { content, file_url } = req.body;
     const studentId = req.user.sub;
     const assignmentId = req.params.id;
@@ -87,21 +92,21 @@ router.post("/:id/submit", (0, role_1.requireRole)("student"), async (req, res) 
        VALUES ($1,$2,$3,$4) RETURNING id`, [assignmentId, studentId, content ?? null, file_url ?? null]);
         res.status(201).json({ id: rows[0].id });
     }
-});
+}));
 // GET /assignments/:id/submission (student o'zining topshirig'ini ko'radi)
-router.get("/:id/submission", (0, role_1.requireRole)("student"), async (req, res) => {
+router.get("/:id/submission", (0, role_1.requireRole)("student"), (0, asyncHandler_1.ah)(async (req, res) => {
     const { rows } = await pool_1.pool.query("SELECT * FROM assignment_submissions WHERE assignment_id=$1 AND student_id=$2", [req.params.id, req.user.sub]);
     res.json(rows[0] ?? null);
-});
+}));
 // PUT /submissions/:submissionId/grade (teacher)
-router.put("/submissions/:submissionId/grade", (0, role_1.requireRole)("teacher", "super_admin"), async (_req, res) => {
+router.put("/submissions/:submissionId/grade", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
     const parsed = zod_1.z.object({ score: zod_1.z.number().min(0), teacher_comment: zod_1.z.string().nullable().optional() })
-        .safeParse(_req.body);
+        .safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: "score kerak" });
         return;
     }
-    await pool_1.pool.query("UPDATE assignment_submissions SET score=$1, teacher_comment=$2 WHERE id=$3", [parsed.data.score, parsed.data.teacher_comment ?? null, _req.params.submissionId]);
+    await pool_1.pool.query("UPDATE assignment_submissions SET score=$1, teacher_comment=$2 WHERE id=$3", [parsed.data.score, parsed.data.teacher_comment ?? null, req.params.submissionId]);
     res.json({ ok: true });
-});
+}));
 exports.default = router;
