@@ -4,6 +4,15 @@ import "dotenv/config";
 import app from "./app";
 import { setupSocket } from "./socket";
 import { pool } from "./db/pool";
+import { logger } from "./utils/logger";
+
+process.on("uncaughtException", (err) => {
+  logger.error("uncaughtException", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
+});
 
 const PORT = parseInt(process.env.PORT ?? "4000", 10);
 

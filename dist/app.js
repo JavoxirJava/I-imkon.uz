@@ -31,6 +31,10 @@ app.use((0, cors_1.default)({
     credentials: true,
 }));
 app.use(express_1.default.json({ limit: "2mb" }));
+app.use((req, _res, next) => {
+    logger_1.logger.info(`${req.method} ${req.path}`, { ip: req.ip, body: req.method !== "GET" ? req.body : undefined });
+    next();
+});
 app.get("/health", (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 app.use("/public", public_1.default);
 app.use("/auth", auth_1.default);

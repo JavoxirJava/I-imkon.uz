@@ -30,6 +30,11 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "2mb" }));
 
+app.use((req, _res, next) => {
+  logger.info(`${req.method} ${req.path}`, { ip: req.ip, body: req.method !== "GET" ? req.body : undefined });
+  next();
+});
+
 app.get("/health", (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 app.use("/public",      publicRouter);
 

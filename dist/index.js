@@ -9,6 +9,13 @@ require("dotenv/config");
 const app_1 = __importDefault(require("./app"));
 const socket_1 = require("./socket");
 const pool_1 = require("./db/pool");
+const logger_1 = require("./utils/logger");
+process.on("uncaughtException", (err) => {
+    logger_1.logger.error("uncaughtException", err);
+});
+process.on("unhandledRejection", (reason) => {
+    logger_1.logger.error("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
+});
 const PORT = parseInt(process.env.PORT ?? "4000", 10);
 const httpServer = (0, http_1.createServer)(app_1.default);
 const io = new socket_io_1.Server(httpServer, {
