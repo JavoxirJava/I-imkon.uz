@@ -44,13 +44,15 @@ router.get("/:id", ah(async (req, res) => {
 }));
 
 const AssignmentSchema = z.object({
-  title:       z.string().min(1),
-  description: z.string().nullable().optional(),
-  subject_id:  z.string().uuid(),
-  class_ids:   z.array(z.string().uuid()).min(1),
-  deadline:    z.string().datetime().nullable().optional(),
-  max_score:   z.number().int().positive().default(100),
-  file_url:    z.string().url().nullable().optional(),
+  title:            z.string().min(1),
+  description:      z.string().nullable().optional(),
+  subject_id:       z.string().uuid(),
+  class_ids:        z.array(z.string().uuid()).min(1),
+  deadline:         z.string().datetime().nullable().optional(),
+  max_score:        z.number().int().positive().default(100),
+  file_url:         z.string().url().nullable().optional(),
+  difficulty_level: z.enum(["low", "medium", "high"]).default("medium"),
+  is_for_disabled:  z.boolean().default(false),
 });
 
 router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
@@ -67,10 +69,10 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
   const ids: string[] = [];
   for (const classId of d.class_ids) {
     const { rows } = await pool.query(
-      `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, difficulty_level, is_for_disabled)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [req.user!.sub, d.subject_id, classId, d.title, d.description ?? null,
-       d.deadline ?? null, d.max_score, d.file_url ?? null]
+       d.deadline ?? null, d.max_score, d.file_url ?? null, d.difficulty_level, d.is_for_disabled]
     );
     ids.push(rows[0].id);
   }
