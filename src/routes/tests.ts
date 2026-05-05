@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
+import multer from "multer";
 import { pool } from "../db/pool";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/role";
+import { generateTestExcel, parseTestExcel } from "../utils/testExcel";
 import type { AuthRequest } from "../types";
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const router = Router();
 router.use(requireAuth);
@@ -154,6 +158,107 @@ router.put("/:id", requireRole("teacher", "super_admin"), async (req: AuthReques
   );
   await upsertTestData(pool, req.params.id, parsed.data);
   res.json({ ok: true });
+});
+
+// GET /tests/:id/export — Excel yuklab olish
+router.get("/:id/export", requireRole("teacher", "director", "super_admin"), async (req, res) => {
+  const { rows: tests } = await pool.query(
+    `SELECT t.title, t.description, t.time_limit, t.test_type, t.max_attempts FROM tests t WHERE t.id = $1`,
+    [req.params.id]
+  );
+  if (!tests[0]) { res.status(404).json({ error: "Test topilmadi" }); return; }
+
+  const { rows: questions } = await pool.query(
+    `SELECT q.question_text, q.question_type, q.points,
+            COALESCE(json_agg(json_build_object('option_text',o.option_text,'is_correct',o.is_correct) ORDER BY o.id) FILTER (WHERE o.id IS NOT NULL), '[]') AS options
+     FROM questions q
+     LEFT JOIN question_options o ON o.question_id = q.id
+     WHERE q.test_id = $1
+     GROUP BY q.id ORDER BY q.sort_order`,
+    [req.params.id]
+  );
+
+  const buffer = await generateTestExcel({ ...tests[0], questions });
+  const filename = encodeURIComponent(tests[0].title.replace(/[^\w\s-]/g, "")) + ".xlsx";
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${filename}`);
+  res.send(buffer);
+});
+
+// POST /tests/import — Excel dan test yuklash
+router.post("/import", requireRole("teacher", "super_admin"), upload.single("file"), async (req: AuthRequest, res) => {
+  if (!req.file) { res.status(400).json({ error: "Fayl kerak" }); return; }
+
+  let parsed;
+  try {
+    parsed = await parseTestExcel(req.file.buffer);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Fayl o'qishda xatolik" });
+    return;
+  }
+
+  const { subject_id, class_ids } = req.body as { subject_id?: string; class_ids?: string };
+  if (!subject_id) { res.status(400).json({ error: "subject_id kerak" }); return; }
+
+  const classIds: string[] = class_ids ? JSON.parse(class_ids) : [];
+
+  const { rows } = await pool.query(
+    `INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [req.user!.sub, subject_id, parsed.title, parsed.description,
+     parsed.time_limit, parsed.test_type, parsed.max_attempts]
+  );
+  const testId = rows[0].id;
+  await upsertTestData(pool, testId, { ...parsed, subject_id, class_ids: classIds });
+  res.status(201).json({ id: testId, question_count: parsed.questions.length });
+});
+
+// GET /tests/template — bo'sh shablon yuklab olish
+router.get("/template", requireRole("teacher", "super_admin"), async (_req, res) => {
+  const template = await generateTestExcel({
+    title: "Namuna test sarlavhasi",
+    description: "Test tavsifi (ixtiyoriy)",
+    time_limit: 30,
+    test_type: "home_study",
+    max_attempts: 3,
+    questions: [
+      {
+        question_text: "Namuna savol 1 (bir javobli)",
+        question_type: "single",
+        points: 1,
+        options: [
+          { option_text: "Variant A", is_correct: true },
+          { option_text: "Variant B", is_correct: false },
+          { option_text: "Variant C", is_correct: false },
+          { option_text: "Variant D", is_correct: false },
+        ],
+      },
+      {
+        question_text: "Namuna savol 2 (ko'p javobli)",
+        question_type: "multiple",
+        points: 2,
+        options: [
+          { option_text: "Variant A", is_correct: true },
+          { option_text: "Variant B", is_correct: false },
+          { option_text: "Variant C", is_correct: true },
+          { option_text: "Variant D", is_correct: false },
+        ],
+      },
+      {
+        question_text: "Namuna savol 3 (to'g'ri/noto'g'ri)",
+        question_type: "true_false",
+        points: 1,
+        options: [
+          { option_text: "To'g'ri", is_correct: true },
+          { option_text: "Noto'g'ri", is_correct: false },
+        ],
+      },
+    ],
+  });
+
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", "attachment; filename*=UTF-8''test-shablon.xlsx");
+  res.send(template);
 });
 
 // DELETE /tests/:id

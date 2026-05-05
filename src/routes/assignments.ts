@@ -48,7 +48,7 @@ const AssignmentSchema = z.object({
   description:      z.string().nullable().optional(),
   subject_id:       z.string().uuid(),
   class_ids:        z.array(z.string().uuid()).min(1),
-  deadline:         z.string().datetime().nullable().optional(),
+  deadline:         z.string().nullable().optional(),
   max_score:        z.number().int().positive().default(100),
   file_url:         z.string().url().nullable().optional(),
   difficulty_level: z.enum(["low", "medium", "high"]).default("medium"),
