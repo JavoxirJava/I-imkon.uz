@@ -6,7 +6,6 @@ import { requireRole } from "../middleware/role";
 import type { AuthRequest } from "../types";
 
 const router = Router();
-router.use(requireAuth);
 
 router.get("/", async (req, res) => {
   const { school_id } = req.query as Record<string, string>;
@@ -18,7 +17,7 @@ router.get("/", async (req, res) => {
   res.json(rows);
 });
 
-router.post("/", requireRole("director", "super_admin"), async (req: AuthRequest, res) => {
+router.post("/", requireAuth, requireRole("director", "super_admin"), async (req: AuthRequest, res) => {
   const parsed = z.object({
     school_id: z.string().uuid(),
     grade:     z.number().int().min(5).max(9),
@@ -33,7 +32,7 @@ router.post("/", requireRole("director", "super_admin"), async (req: AuthRequest
   res.status(201).json({ id: rows[0].id });
 });
 
-router.delete("/:id", requireRole("director", "super_admin"), async (_req, res) => {
+router.delete("/:id", requireAuth, requireRole("director", "super_admin"), async (_req, res) => {
   await pool.query("DELETE FROM classes WHERE id=$1", [_req.params.id]);
   res.json({ ok: true });
 });

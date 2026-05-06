@@ -13,7 +13,7 @@ const RegisterSchema = z.object({
   password: z.string().min(6),
   first_name: z.string().min(1).max(100),
   last_name: z.string().min(1).max(100),
-  role: z.enum(["student", "parent"]).default("student"),
+  role: z.enum(["student", "parent", "teacher"]).default("student"),
 });
 
 const LoginSchema = z.object({

@@ -198,7 +198,8 @@ export async function parseTestExcel(buffer: Buffer | ArrayBuffer): Promise<Exce
     if (rowNum === 1) return; // header
     const getVal = (col: number) => String(row.getCell(col).value ?? "").trim();
     const questionText = getVal(2);
-    if (!questionText || questionText.startsWith("Savol")) return;
+    const typeVal = getVal(3);
+    if (!questionText || !typeVal || !(typeVal in Q_TYPES)) return;
 
     const typeRaw = getVal(3);
     const question_type: QuestionType = Q_TYPES[typeRaw] ?? "single";

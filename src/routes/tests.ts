@@ -256,33 +256,6 @@ router.get("/:id/export", requireRole("teacher", "director", "super_admin"), asy
   res.send(buffer);
 });
 
-// POST /tests/import — Excel dan test yuklash
-router.post("/import", requireRole("teacher", "super_admin"), upload.single("file"), async (req: AuthRequest, res) => {
-  if (!req.file) { res.status(400).json({ error: "Fayl kerak" }); return; }
-
-  let parsed;
-  try {
-    parsed = await parseTestExcel(req.file.buffer);
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Fayl o'qishda xatolik" });
-    return;
-  }
-
-  const { subject_id, class_ids } = req.body as { subject_id?: string; class_ids?: string };
-  if (!subject_id) { res.status(400).json({ error: "subject_id kerak" }); return; }
-
-  const classIds: string[] = class_ids ? JSON.parse(class_ids) : [];
-
-  const { rows } = await pool.query(
-    `INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [req.user!.sub, subject_id, parsed.title, parsed.description,
-     parsed.time_limit, parsed.test_type, parsed.max_attempts]
-  );
-  const testId = rows[0].id;
-  await upsertTestData(pool, testId, { ...parsed, subject_id, class_ids: classIds });
-  res.status(201).json({ id: testId, question_count: parsed.questions.length });
-});
 
 // DELETE /tests/:id
 router.delete("/:id", requireRole("teacher", "super_admin"), async (req: AuthRequest, res) => {
