@@ -109,7 +109,7 @@ router.post("/import", requireRole("teacher", "super_admin"), upload.single("fil
      parsed.time_limit, parsed.test_type, parsed.max_attempts]
   );
   const testId = rows[0].id;
-  await upsertTestData(pool, testId, { ...parsed, subject_id, class_ids: classIds });
+  await upsertTestData(pool, testId, { ...parsed, subject_id, class_ids: classIds, game_ids: [] });
   res.status(201).json({ id: testId, question_count: parsed.questions.length });
 });
 
