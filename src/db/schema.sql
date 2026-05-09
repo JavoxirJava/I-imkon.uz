@@ -303,6 +303,15 @@ CREATE TABLE game_classes (
   PRIMARY KEY (game_id, class_id)
 );
 
+CREATE TABLE test_games (
+  test_id UUID NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+  game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  PRIMARY KEY (test_id, game_id)
+);
+
+CREATE INDEX idx_test_games_test ON test_games(test_id);
+CREATE INDEX idx_test_games_game ON test_games(game_id);
+
 CREATE TABLE game_attempts (
   id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   student_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

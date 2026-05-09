@@ -119,7 +119,11 @@ router.get("/:id", async (req, res) => {
     `SELECT t.*, sub.name AS subject_name,
             COALESCE(
               (SELECT json_agg(tc.class_id) FROM test_classes tc WHERE tc.test_id = t.id), '[]'
-            ) AS class_ids
+            ) AS class_ids,
+            COALESCE(
+              (SELECT json_agg(json_build_object('game_id', tg.game_id, 'title', g.title))
+               FROM test_games tg JOIN games g ON g.id = tg.game_id WHERE tg.test_id = t.id), '[]'
+            ) AS test_games
      FROM tests t
      JOIN subjects sub ON sub.id = t.subject_id
      WHERE t.id = $1`,
@@ -159,6 +163,7 @@ const TestSchema = z.object({
   test_type:    z.enum(["entry", "post_topic", "home_study"]).default("home_study"),
   max_attempts: z.number().int().positive().nullable().optional(),
   class_ids:    z.array(z.string().uuid()).default([]),
+  game_ids:     z.array(z.string().uuid()).default([]),
   questions:    z.array(QuestionSchema).min(1),
 });
 
@@ -173,6 +178,14 @@ async function upsertTestData(
     await client.query(
       `INSERT INTO test_classes (test_id, class_id) SELECT $1, unnest($2::uuid[])`,
       [testId, input.class_ids]
+    );
+  }
+  // O'yinlar
+  await client.query("DELETE FROM test_games WHERE test_id = $1", [testId]);
+  if (input.game_ids.length > 0) {
+    await client.query(
+      `INSERT INTO test_games (test_id, game_id) SELECT $1, unnest($2::uuid[])`,
+      [testId, input.game_ids]
     );
   }
   // Eski savollar
