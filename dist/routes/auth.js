@@ -15,7 +15,7 @@ const RegisterSchema = zod_1.z.object({
     password: zod_1.z.string().min(6),
     first_name: zod_1.z.string().min(1).max(100),
     last_name: zod_1.z.string().min(1).max(100),
-    role: zod_1.z.enum(["student", "parent"]).default("student"),
+    role: zod_1.z.enum(["student", "parent", "teacher"]).default("student"),
 });
 const LoginSchema = zod_1.z.object({
     phone: zod_1.z.string(),

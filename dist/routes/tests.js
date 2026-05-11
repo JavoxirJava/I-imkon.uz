@@ -1,10 +1,16 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const zod_1 = require("zod");
+const multer_1 = __importDefault(require("multer"));
 const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
 const role_1 = require("../middleware/role");
+const testExcel_1 = require("../utils/testExcel");
+const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
 // GET /tests?teacher_id=&class_id=
@@ -32,12 +38,89 @@ router.get("/", async (req, res) => {
     }
     res.json(rows);
 });
+// GET /tests/template — bo'sh shablon yuklab olish
+router.get("/template", (0, role_1.requireRole)("teacher", "super_admin"), async (_req, res) => {
+    const template = await (0, testExcel_1.generateTestExcel)({
+        title: "Namuna test sarlavhasi",
+        description: "Test tavsifi (ixtiyoriy)",
+        time_limit: 30,
+        test_type: "home_study",
+        max_attempts: 3,
+        questions: [
+            {
+                question_text: "Namuna savol 1 (bir javobli)",
+                question_type: "single",
+                points: 1,
+                options: [
+                    { option_text: "Variant A", is_correct: true },
+                    { option_text: "Variant B", is_correct: false },
+                    { option_text: "Variant C", is_correct: false },
+                    { option_text: "Variant D", is_correct: false },
+                ],
+            },
+            {
+                question_text: "Namuna savol 2 (ko'p javobli)",
+                question_type: "multiple",
+                points: 2,
+                options: [
+                    { option_text: "Variant A", is_correct: true },
+                    { option_text: "Variant B", is_correct: false },
+                    { option_text: "Variant C", is_correct: true },
+                    { option_text: "Variant D", is_correct: false },
+                ],
+            },
+            {
+                question_text: "Namuna savol 3 (to'g'ri/noto'g'ri)",
+                question_type: "true_false",
+                points: 1,
+                options: [
+                    { option_text: "To'g'ri", is_correct: true },
+                    { option_text: "Noto'g'ri", is_correct: false },
+                ],
+            },
+        ],
+    });
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename*=UTF-8''test-shablon.xlsx");
+    res.send(template);
+});
+// POST /tests/import — Excel dan test yuklash
+router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload.single("file"), async (req, res) => {
+    if (!req.file) {
+        res.status(400).json({ error: "Fayl kerak" });
+        return;
+    }
+    let parsed;
+    try {
+        parsed = await (0, testExcel_1.parseTestExcel)(req.file.buffer);
+    }
+    catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : "Fayl o'qishda xatolik" });
+        return;
+    }
+    const { subject_id, class_ids } = req.body;
+    if (!subject_id) {
+        res.status(400).json({ error: "subject_id kerak" });
+        return;
+    }
+    const classIds = class_ids ? JSON.parse(class_ids) : [];
+    const { rows } = await pool_1.pool.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, subject_id, parsed.title, parsed.description,
+        parsed.time_limit, parsed.test_type, parsed.max_attempts]);
+    const testId = rows[0].id;
+    await upsertTestData(pool_1.pool, testId, { ...parsed, subject_id, class_ids: classIds, game_ids: [] });
+    res.status(201).json({ id: testId, question_count: parsed.questions.length });
+});
 // GET /tests/:id (with questions + options)
 router.get("/:id", async (req, res) => {
     const { rows: tests } = await pool_1.pool.query(`SELECT t.*, sub.name AS subject_name,
             COALESCE(
               (SELECT json_agg(tc.class_id) FROM test_classes tc WHERE tc.test_id = t.id), '[]'
-            ) AS class_ids
+            ) AS class_ids,
+            COALESCE(
+              (SELECT json_agg(json_build_object('game_id', tg.game_id, 'title', g.title))
+               FROM test_games tg JOIN games g ON g.id = tg.game_id WHERE tg.test_id = t.id), '[]'
+            ) AS test_games
      FROM tests t
      JOIN subjects sub ON sub.id = t.subject_id
      WHERE t.id = $1`, [req.params.id]);
@@ -72,6 +155,7 @@ const TestSchema = zod_1.z.object({
     test_type: zod_1.z.enum(["entry", "post_topic", "home_study"]).default("home_study"),
     max_attempts: zod_1.z.number().int().positive().nullable().optional(),
     class_ids: zod_1.z.array(zod_1.z.string().uuid()).default([]),
+    game_ids: zod_1.z.array(zod_1.z.string().uuid()).default([]),
     questions: zod_1.z.array(QuestionSchema).min(1),
 });
 async function upsertTestData(client, testId, input) {
@@ -79,6 +163,11 @@ async function upsertTestData(client, testId, input) {
     await client.query("DELETE FROM test_classes WHERE test_id = $1", [testId]);
     if (input.class_ids.length > 0) {
         await client.query(`INSERT INTO test_classes (test_id, class_id) SELECT $1, unnest($2::uuid[])`, [testId, input.class_ids]);
+    }
+    // O'yinlar
+    await client.query("DELETE FROM test_games WHERE test_id = $1", [testId]);
+    if (input.game_ids.length > 0) {
+        await client.query(`INSERT INTO test_games (test_id, game_id) SELECT $1, unnest($2::uuid[])`, [testId, input.game_ids]);
     }
     // Eski savollar
     await client.query("DELETE FROM questions WHERE test_id = $1", [testId]);
@@ -124,6 +213,25 @@ router.put("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req
         req.params.id, req.user.sub, req.user.role]);
     await upsertTestData(pool_1.pool, req.params.id, parsed.data);
     res.json({ ok: true });
+});
+// GET /tests/:id/export — Excel yuklab olish
+router.get("/:id/export", (0, role_1.requireRole)("teacher", "director", "super_admin"), async (req, res) => {
+    const { rows: tests } = await pool_1.pool.query(`SELECT t.title, t.description, t.time_limit, t.test_type, t.max_attempts FROM tests t WHERE t.id = $1`, [req.params.id]);
+    if (!tests[0]) {
+        res.status(404).json({ error: "Test topilmadi" });
+        return;
+    }
+    const { rows: questions } = await pool_1.pool.query(`SELECT q.question_text, q.question_type, q.points,
+            COALESCE(json_agg(json_build_object('option_text',o.option_text,'is_correct',o.is_correct) ORDER BY o.id) FILTER (WHERE o.id IS NOT NULL), '[]') AS options
+     FROM questions q
+     LEFT JOIN question_options o ON o.question_id = q.id
+     WHERE q.test_id = $1
+     GROUP BY q.id ORDER BY q.sort_order`, [req.params.id]);
+    const buffer = await (0, testExcel_1.generateTestExcel)({ ...tests[0], questions });
+    const filename = encodeURIComponent(tests[0].title.replace(/[^\w\s-]/g, "")) + ".xlsx";
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${filename}`);
+    res.send(buffer);
 });
 // DELETE /tests/:id
 router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {

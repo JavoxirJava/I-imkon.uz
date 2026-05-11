@@ -11,6 +11,7 @@ router.use(auth_1.requireAuth);
 router.get("/me", (0, role_1.requireRole)("student"), async (req, res) => {
     const { rows } = await pool_1.pool.query(`SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
             sp.class_id, sp.school_id, sp.approved_at,
+            sp.difficulty_level, sp.is_disabled,
             c.grade, c.letter,
             s.name AS school_name
      FROM users u
@@ -19,6 +20,26 @@ router.get("/me", (0, role_1.requireRole)("student"), async (req, res) => {
      LEFT JOIN schools s ON s.id = sp.school_id
      WHERE u.id = $1`, [req.user.sub]);
     res.json(rows[0] ?? null);
+});
+// GET /students/me/assignments — darajaga qarab filtrlangan vazifalar
+router.get("/me/assignments", (0, role_1.requireRole)("student"), async (req, res) => {
+    const studentId = req.user.sub;
+    const profileRes = await pool_1.pool.query(`SELECT class_id, difficulty_level, is_disabled FROM student_profiles WHERE user_id = $1`, [studentId]);
+    const profile = profileRes.rows[0];
+    if (!profile?.class_id) {
+        res.json([]);
+        return;
+    }
+    const { rows } = await pool_1.pool.query(`SELECT a.*, json_build_object('name', sub.name) AS subjects
+     FROM assignments a
+     JOIN subjects sub ON sub.id = a.subject_id
+     WHERE a.class_id = $1
+       AND (
+         a.difficulty_level = $2
+         OR (a.is_for_disabled = TRUE AND $3 = TRUE)
+       )
+     ORDER BY a.created_at DESC`, [profile.class_id, profile.difficulty_level, profile.is_disabled]);
+    res.json(rows);
 });
 // GET /students/me/dashboard — student dashboard data
 router.get("/me/dashboard", (0, role_1.requireRole)("student"), async (req, res) => {

@@ -6,7 +6,6 @@ const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
 const role_1 = require("../middleware/role");
 const router = (0, express_1.Router)();
-router.use(auth_1.requireAuth);
 router.get("/", async (req, res) => {
     const { school_id } = req.query;
     if (!school_id) {
@@ -16,7 +15,7 @@ router.get("/", async (req, res) => {
     const { rows } = await pool_1.pool.query("SELECT id, grade, letter, school_id FROM classes WHERE school_id=$1 ORDER BY grade, letter", [school_id]);
     res.json(rows);
 });
-router.post("/", (0, role_1.requireRole)("director", "super_admin"), async (req, res) => {
+router.post("/", auth_1.requireAuth, (0, role_1.requireRole)("director", "super_admin"), async (req, res) => {
     const parsed = zod_1.z.object({
         school_id: zod_1.z.string().uuid(),
         grade: zod_1.z.number().int().min(5).max(9),
@@ -29,7 +28,7 @@ router.post("/", (0, role_1.requireRole)("director", "super_admin"), async (req,
     const { rows } = await pool_1.pool.query("INSERT INTO classes (school_id, grade, letter) VALUES ($1,$2,$3) RETURNING id", [parsed.data.school_id, parsed.data.grade, parsed.data.letter.toUpperCase()]);
     res.status(201).json({ id: rows[0].id });
 });
-router.delete("/:id", (0, role_1.requireRole)("director", "super_admin"), async (_req, res) => {
+router.delete("/:id", auth_1.requireAuth, (0, role_1.requireRole)("director", "super_admin"), async (_req, res) => {
     await pool_1.pool.query("DELETE FROM classes WHERE id=$1", [_req.params.id]);
     res.json({ ok: true });
 });

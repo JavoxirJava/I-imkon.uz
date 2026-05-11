@@ -41,9 +41,11 @@ const AssignmentSchema = zod_1.z.object({
     description: zod_1.z.string().nullable().optional(),
     subject_id: zod_1.z.string().uuid(),
     class_ids: zod_1.z.array(zod_1.z.string().uuid()).min(1),
-    deadline: zod_1.z.string().datetime().nullable().optional(),
+    deadline: zod_1.z.string().nullable().optional(),
     max_score: zod_1.z.number().int().positive().default(100),
     file_url: zod_1.z.string().url().nullable().optional(),
+    difficulty_level: zod_1.z.enum(["low", "medium", "high"]).default("medium"),
+    is_for_disabled: zod_1.z.boolean().default(false),
 });
 router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
     logger_1.logger.req(req, "POST /assignments", { user: req.user?.sub });
@@ -56,9 +58,9 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHan
     const d = parsed.data;
     const ids = [];
     for (const classId of d.class_ids) {
-        const { rows } = await pool_1.pool.query(`INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [req.user.sub, d.subject_id, classId, d.title, d.description ?? null,
-            d.deadline ?? null, d.max_score, d.file_url ?? null]);
+        const { rows } = await pool_1.pool.query(`INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, difficulty_level, is_for_disabled)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [req.user.sub, d.subject_id, classId, d.title, d.description ?? null,
+            d.deadline ?? null, d.max_score, d.file_url ?? null, d.difficulty_level, d.is_for_disabled]);
         ids.push(rows[0].id);
     }
     logger_1.logger.info("POST /assignments: created", { ids, user: req.user?.sub });

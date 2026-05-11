@@ -21,12 +21,13 @@ router.get("/", ah(async (req, res) => {
 
   const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
   const { rows } = await pool.query(
-    `SELECT l.*, sub.name AS subject_name,
-            c.grade, c.letter,
+    `SELECT l.*,
+            json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'source', ls.source))
-               FROM lecture_subtitles ls WHERE ls.lecture_id = l.id), '[]'
-            ) AS subtitles
+               FROM lecture_subtitles ls WHERE ls.lecture_id = l.id), '[]'::json
+            ) AS lecture_subtitles
      FROM lectures l
      JOIN subjects sub ON sub.id = l.subject_id
      LEFT JOIN classes c ON c.id = l.class_id
@@ -40,12 +41,13 @@ router.get("/", ah(async (req, res) => {
 // GET /lectures/:id
 router.get("/:id", ah(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT l.*, sub.name AS subject_name,
-            c.grade, c.letter,
+    `SELECT l.*,
+            json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'language', ls.language, 'source', ls.source))
-               FROM lecture_subtitles ls WHERE ls.lecture_id = l.id), '[]'
-            ) AS subtitles
+               FROM lecture_subtitles ls WHERE ls.lecture_id = l.id), '[]'::json
+            ) AS lecture_subtitles
      FROM lectures l
      JOIN subjects sub ON sub.id = l.subject_id
      LEFT JOIN classes c ON c.id = l.class_id

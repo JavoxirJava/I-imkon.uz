@@ -26,10 +26,7 @@ const schools_1 = __importDefault(require("./routes/schools"));
 const leaderboard_1 = __importDefault(require("./routes/leaderboard"));
 const app = (0, express_1.default)();
 app.use((0, helmet_1.default)());
-app.use((0, cors_1.default)({
-    origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
-    credentials: true,
-}));
+app.use((0, cors_1.default)({ origin: true, credentials: true }));
 app.use(express_1.default.json({ limit: "2mb" }));
 app.use((req, _res, next) => {
     logger_1.logger.info(`${req.method} ${req.path}`, { ip: req.ip, body: req.method !== "GET" ? req.body : undefined });
