@@ -1,5 +1,5 @@
 -- =============================================================
--- anjir-server — To'liq DB sxemasi (Supabase-siz, standalone PG)
+-- anjir-server — To'liq DB sxemasi (standalone PostgreSQL)
 -- =============================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -111,6 +111,9 @@ CREATE TABLE student_profiles (
   user_id          UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   school_id        UUID NOT NULL REFERENCES schools(id),
   class_id         UUID NOT NULL REFERENCES classes(id),
+  difficulty_level difficulty_level NOT NULL DEFAULT 'low',
+  level_progress_score SMALLINT NOT NULL DEFAULT 3 CHECK (level_progress_score BETWEEN 0 AND 6),
+  is_disabled      BOOLEAN NOT NULL DEFAULT FALSE,
   approved_by      UUID REFERENCES users(id) ON DELETE SET NULL,
   approved_at      TIMESTAMPTZ,
   rejection_reason TEXT
@@ -207,6 +210,9 @@ CREATE TABLE assignment_submissions (
   content       TEXT,
   file_url      TEXT,
   submitted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  progress_state TEXT,
+  teacher_reviewed_at TIMESTAMPTZ,
+  teacher_reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
   score         SMALLINT CHECK (score >= 0),
   teacher_comment TEXT,
   UNIQUE (assignment_id, student_id)

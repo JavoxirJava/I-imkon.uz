@@ -8,13 +8,21 @@ import { z } from "zod";
 
 const router = Router();
 router.use(requireAuth);
+type DifficultyLevel = "low" | "medium" | "high";
+
+function canSeeHigherLevel(baseLevel: DifficultyLevel, pendingLevels: Set<DifficultyLevel>) {
+  if (baseLevel === "low" && pendingLevels.has("low")) return "medium";
+  if (baseLevel === "medium" && pendingLevels.has("medium")) return "high";
+  if (baseLevel === "low" && pendingLevels.has("medium")) return "high";
+  return baseLevel;
+}
 
 // GET /students/me — o'z profili
 router.get("/me", requireRole("student"), async (req: AuthRequest, res) => {
   const { rows } = await pool.query(
     `SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
             sp.class_id, sp.school_id, sp.approved_at,
-            sp.difficulty_level, sp.is_disabled,
+            sp.difficulty_level, sp.level_progress_score, sp.is_disabled,
             c.grade, c.letter,
             s.name AS school_name
      FROM users u
@@ -37,19 +45,64 @@ router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, r
   const profile = profileRes.rows[0];
   if (!profile?.class_id) { res.json([]); return; }
 
+  const pendingRes = await pool.query(
+    `SELECT DISTINCT a.difficulty_level
+     FROM assignment_submissions asub
+     JOIN assignments a ON a.id = asub.assignment_id
+     WHERE asub.student_id = $1
+       AND asub.progress_state = 'done_pending'`,
+    [studentId]
+  );
+  const pendingLevels = new Set(
+    pendingRes.rows.map((r: { difficulty_level: DifficultyLevel }) => r.difficulty_level)
+  );
+
+  const baseLevel = profile.difficulty_level as DifficultyLevel;
+  const visibleLevel = canSeeHigherLevel(baseLevel, pendingLevels);
+  const visibleLevels: DifficultyLevel[] = visibleLevel === "high"
+    ? ["low", "medium", "high"]
+    : visibleLevel === "medium"
+      ? ["low", "medium"]
+      : ["low"];
+
   const { rows } = await pool.query(
     `SELECT a.*, json_build_object('name', sub.name) AS subjects
      FROM assignments a
      JOIN subjects sub ON sub.id = a.subject_id
      WHERE a.class_id = $1
        AND (
-         a.difficulty_level = $2
+         a.difficulty_level = ANY($2::difficulty_level[])
          OR (a.is_for_disabled = TRUE AND $3 = TRUE)
        )
      ORDER BY a.created_at DESC`,
-    [profile.class_id, profile.difficulty_level, profile.is_disabled]
+    [profile.class_id, visibleLevels, profile.is_disabled]
   );
-  res.json(rows);
+
+  const studentSubmissions = await pool.query(
+    `SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`,
+    [studentId]
+  );
+  const progressByAssignment = new Map<string, string | null>();
+  for (const row of studentSubmissions.rows as Array<{ assignment_id: string; progress_state: string | null }>) {
+    progressByAssignment.set(row.assignment_id, row.progress_state);
+  }
+
+  const enriched = rows.map((a) => ({
+    ...a,
+    my_progress_state: progressByAssignment.get(a.id) ?? null,
+  }));
+
+  const noMoreAtHigh = baseLevel === "high" &&
+    !enriched.some((a: { difficulty_level: DifficultyLevel; my_progress_state?: string | null }) =>
+      a.difficulty_level === "high" && a.my_progress_state !== "done_approved"
+    );
+
+  res.json({
+    assignments: enriched,
+    level: baseLevel,
+    visible_level: visibleLevel,
+    ready_for_test: noMoreAtHigh,
+  });
 });
 
 // GET /students/me/dashboard — student dashboard data
