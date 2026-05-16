@@ -115,12 +115,21 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
 router.post("/:id/subtitles", ah(async (req, res) => {
   const { vtt_url, language, source } = req.body as { vtt_url: string; language?: string; source?: string };
   if (!vtt_url) { res.status(400).json({ error: "vtt_url kerak" }); return; }
-  await pool.query(
-    `INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
-     VALUES ($1,$2,$3,$4)
-     ON CONFLICT (lecture_id, language) DO UPDATE SET vtt_url=EXCLUDED.vtt_url, source=EXCLUDED.source`,
-    [req.params.id, vtt_url, language ?? "uz", source ?? "ai"]
+  const lang = language ?? "uz";
+  const updated = await pool.query(
+    `UPDATE lecture_subtitles
+     SET vtt_url=$1, source=$2
+     WHERE lecture_id=$3 AND language=$4
+     RETURNING id`,
+    [vtt_url, source ?? "ai", req.params.id, lang]
   );
+  if (!updated.rows[0]) {
+    await pool.query(
+      `INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
+       VALUES ($1,$2,$3,$4)`,
+      [req.params.id, vtt_url, lang, source ?? "ai"]
+    );
+  }
   res.json({ ok: true });
 }));
 
@@ -167,12 +176,20 @@ router.put("/:id", requireRole("teacher", "super_admin"), ah(async (req: AuthReq
   }
 
   if (d.subtitle_vtt_url) {
-    await pool.query(
-      `INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
-       VALUES ($1,$2,'uz',$3)
-       ON CONFLICT (lecture_id, language) DO UPDATE SET vtt_url=EXCLUDED.vtt_url, source=EXCLUDED.source`,
-      [req.params.id, d.subtitle_vtt_url, d.subtitle_source ?? "manual"]
+    const updated = await pool.query(
+      `UPDATE lecture_subtitles
+       SET vtt_url=$1, source=$2
+       WHERE lecture_id=$3 AND language='uz'
+       RETURNING id`,
+      [d.subtitle_vtt_url, d.subtitle_source ?? "manual", req.params.id]
     );
+    if (!updated.rows[0]) {
+      await pool.query(
+        `INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
+         VALUES ($1,$2,'uz',$3)`,
+        [req.params.id, d.subtitle_vtt_url, d.subtitle_source ?? "manual"]
+      );
+    }
   }
 
   res.json({ ok: true });
