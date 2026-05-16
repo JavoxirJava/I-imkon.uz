@@ -19,29 +19,69 @@ function canSeeHigherLevel(baseLevel: DifficultyLevel, pendingLevels: Set<Diffic
 
 // GET /students/me — o'z profili
 router.get("/me", requireRole("student"), async (req: AuthRequest, res) => {
-  const { rows } = await pool.query(
-    `SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
-            sp.class_id, sp.school_id, sp.approved_at,
-            sp.difficulty_level, sp.level_progress_score, sp.is_disabled,
-            c.grade, c.letter,
-            s.name AS school_name
-     FROM users u
-     LEFT JOIN student_profiles sp ON sp.user_id = u.id
-     LEFT JOIN classes c ON c.id = sp.class_id
-     LEFT JOIN schools s ON s.id = sp.school_id
-     WHERE u.id = $1`,
-    [req.user!.sub]
-  );
-  res.json(rows[0] ?? null);
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
+              sp.class_id, sp.school_id, sp.approved_at,
+              sp.difficulty_level, sp.level_progress_score, sp.is_disabled,
+              c.grade, c.letter,
+              s.name AS school_name
+       FROM users u
+       LEFT JOIN student_profiles sp ON sp.user_id = u.id
+       LEFT JOIN classes c ON c.id = sp.class_id
+       LEFT JOIN schools s ON s.id = sp.school_id
+       WHERE u.id = $1`,
+      [req.user!.sub]
+    );
+    res.json(rows[0] ?? null);
+  } catch {
+    // Legacy schema fallback (difficulty columns not yet migrated)
+    const { rows } = await pool.query(
+      `SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
+              sp.class_id, sp.school_id, sp.approved_at,
+              c.grade, c.letter,
+              s.name AS school_name
+       FROM users u
+       LEFT JOIN student_profiles sp ON sp.user_id = u.id
+       LEFT JOIN classes c ON c.id = sp.class_id
+       LEFT JOIN schools s ON s.id = sp.school_id
+       WHERE u.id = $1`,
+      [req.user!.sub]
+    );
+    const row = rows[0] ?? null;
+    if (!row) {
+      res.json(null);
+      return;
+    }
+    res.json({
+      ...row,
+      difficulty_level: "low",
+      level_progress_score: 3,
+      is_disabled: false,
+    });
+  }
 });
 
 // GET /students/me/assignments — darajaga qarab filtrlangan vazifalar
 router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, res) => {
   const studentId = req.user!.sub;
-  const profileRes = await pool.query(
-    `SELECT class_id, difficulty_level, is_disabled FROM student_profiles WHERE user_id = $1`,
-    [studentId]
-  );
+  let profileRes;
+  try {
+    profileRes = await pool.query(
+      `SELECT class_id, difficulty_level, is_disabled FROM student_profiles WHERE user_id = $1`,
+      [studentId]
+    );
+  } catch {
+    profileRes = await pool.query(
+      `SELECT class_id FROM student_profiles WHERE user_id = $1`,
+      [studentId]
+    );
+    profileRes.rows = profileRes.rows.map((r: { class_id: string }) => ({
+      ...r,
+      difficulty_level: "low",
+      is_disabled: false,
+    }));
+  }
   const profile = profileRes.rows[0];
   if (!profile?.class_id) { res.json([]); return; }
 
