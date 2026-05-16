@@ -124,6 +124,60 @@ router.post("/:id/subtitles", ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// PUT /lectures/:id
+const UpdateLectureSchema = z.object({
+  subject_id:    z.string().uuid(),
+  class_id:      z.string().uuid().nullable().optional(),
+  title:         z.string().min(1).max(500),
+  description:   z.string().nullable().optional(),
+  content_type:  z.enum(["pdf", "video", "audio", "ppt"]),
+  file_url:      z.string().url(),
+  subtitle_vtt_url: z.string().url().nullable().optional(),
+  subtitle_source:  z.enum(["manual", "ai"]).optional(),
+});
+
+router.put("/:id", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
+  const parsed = UpdateLectureSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.errors[0]?.message });
+    return;
+  }
+  const d = parsed.data;
+
+  const { rows } = await pool.query(
+    `UPDATE lectures
+     SET subject_id=$1, class_id=$2, title=$3, description=$4, content_type=$5, file_url=$6
+     WHERE id=$7 AND (creator_id=$8 OR $9='super_admin')
+     RETURNING id`,
+    [
+      d.subject_id,
+      d.class_id ?? null,
+      d.title,
+      d.description ?? null,
+      d.content_type,
+      d.file_url,
+      req.params.id,
+      req.user!.sub,
+      req.user!.role,
+    ]
+  );
+  if (!rows[0]) {
+    res.status(404).json({ error: "Topilmadi yoki ruxsat yo'q" });
+    return;
+  }
+
+  if (d.subtitle_vtt_url) {
+    await pool.query(
+      `INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
+       VALUES ($1,$2,'uz',$3)
+       ON CONFLICT (lecture_id, language) DO UPDATE SET vtt_url=EXCLUDED.vtt_url, source=EXCLUDED.source`,
+      [req.params.id, d.subtitle_vtt_url, d.subtitle_source ?? "manual"]
+    );
+  }
+
+  res.json({ ok: true });
+}));
+
 // DELETE /lectures/:id
 router.delete("/:id", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
   await pool.query(
