@@ -48,6 +48,7 @@ const GameSchema = z.object({
   title:         z.string().min(1),
   template_type: z.enum(["word_match", "ordering", "memory"]),
   subject_id:    z.string().uuid(),
+  external_url:  z.string().url().optional().or(z.literal("")),
   content_json:  z.record(z.unknown()).default({}),
   class_ids:     z.array(z.string().uuid()).default([]),
 });
@@ -58,9 +59,9 @@ router.post("/", requireRole("teacher", "super_admin"), async (req: AuthRequest,
   const d = parsed.data;
 
   const { rows } = await pool.query(
-    `INSERT INTO games (teacher_id, template_type, subject_id, title, content_json)
-     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [req.user!.sub, d.template_type, d.subject_id, d.title, JSON.stringify(d.content_json)]
+    `INSERT INTO games (teacher_id, template_type, subject_id, title, external_url, content_json)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [req.user!.sub, d.template_type, d.subject_id, d.title, d.external_url || null, JSON.stringify(d.content_json)]
   );
   const gameId = rows[0].id;
   if (d.class_ids.length > 0) {

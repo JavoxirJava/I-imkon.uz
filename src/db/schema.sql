@@ -299,6 +299,7 @@ CREATE TABLE games (
   subject_id    UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
   class_id      UUID REFERENCES classes(id) ON DELETE CASCADE,
   title         TEXT NOT NULL,
+  external_url  TEXT,
   content_json  JSONB NOT NULL DEFAULT '{}',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
