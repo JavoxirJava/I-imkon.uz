@@ -3,12 +3,19 @@ import { pool } from "../db/pool";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/role";
 import type { AuthRequest } from "../types";
+import { ah } from "../utils/asyncHandler";
 
 import { z } from "zod";
 
 const router = Router();
 router.use(requireAuth);
 type DifficultyLevel = "low" | "medium" | "high";
+type AssignmentForStudent = {
+  id: string;
+  difficulty_level?: DifficultyLevel | null;
+  my_progress_state?: string | null;
+  [key: string]: unknown;
+};
 
 function canSeeHigherLevel(baseLevel: DifficultyLevel, pendingLevels: Set<DifficultyLevel>) {
   if (baseLevel === "low" && pendingLevels.has("low")) return "medium";
@@ -63,7 +70,7 @@ router.get("/me", requireRole("student"), async (req: AuthRequest, res) => {
 });
 
 // GET /students/me/assignments — darajaga qarab filtrlangan vazifalar
-router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, res) => {
+router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest, res) => {
   const studentId = req.user!.sub;
   let profileRes;
   try {
@@ -97,7 +104,8 @@ router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, r
     pendingRes.rows.map((r: { difficulty_level: DifficultyLevel }) => r.difficulty_level)
   );
 
-  const baseLevel = profile.difficulty_level as DifficultyLevel;
+  const rawLevel = profile.difficulty_level as DifficultyLevel | null | undefined;
+  const baseLevel: DifficultyLevel = rawLevel === "medium" || rawLevel === "high" ? rawLevel : "low";
   const visibleLevel = canSeeHigherLevel(baseLevel, pendingLevels);
   const visibleLevels: DifficultyLevel[] = visibleLevel === "high"
     ? ["low", "medium", "high"]
@@ -105,18 +113,33 @@ router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, r
       ? ["low", "medium"]
       : ["low"];
 
-  const { rows } = await pool.query(
-    `SELECT a.*, json_build_object('name', sub.name) AS subjects
-     FROM assignments a
-     JOIN subjects sub ON sub.id = a.subject_id
-     WHERE a.class_id = $1
-       AND (
-         a.difficulty_level = ANY($2::difficulty_level[])
-         OR (a.is_for_disabled = TRUE AND $3 = TRUE)
-       )
-     ORDER BY a.created_at DESC`,
-    [profile.class_id, visibleLevels, profile.is_disabled]
-  );
+  let rows: AssignmentForStudent[] = [];
+  try {
+    const result = await pool.query(
+      `SELECT a.*, json_build_object('name', sub.name) AS subjects
+       FROM assignments a
+       JOIN subjects sub ON sub.id = a.subject_id
+       WHERE a.class_id = $1
+         AND (
+           a.difficulty_level::text = ANY($2::text[])
+           OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)
+         )
+       ORDER BY a.created_at DESC`,
+      [profile.class_id, visibleLevels, Boolean(profile.is_disabled)]
+    );
+    rows = result.rows as AssignmentForStudent[];
+  } catch {
+    // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
+    const result = await pool.query(
+      `SELECT a.*, json_build_object('name', sub.name) AS subjects
+       FROM assignments a
+       JOIN subjects sub ON sub.id = a.subject_id
+       WHERE a.class_id = $1
+       ORDER BY a.created_at DESC`,
+      [profile.class_id]
+    );
+    rows = result.rows as AssignmentForStudent[];
+  }
 
   const studentSubmissions = await pool.query(
     `SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`,
@@ -133,7 +156,7 @@ router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, r
   }));
 
   const noMoreAtHigh = baseLevel === "high" &&
-    !enriched.some((a: { difficulty_level: DifficultyLevel; my_progress_state?: string | null }) =>
+    !enriched.some((a) =>
       a.difficulty_level === "high" && a.my_progress_state !== "done_approved"
     );
 
@@ -143,7 +166,7 @@ router.get("/me/assignments", requireRole("student"), async (req: AuthRequest, r
     visible_level: visibleLevel,
     ready_for_test: noMoreAtHigh,
   });
-});
+}));
 
 // GET /students/me/dashboard — student dashboard data
 router.get("/me/dashboard", requireRole("student"), async (req: AuthRequest, res) => {

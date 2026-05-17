@@ -4,6 +4,7 @@ const express_1 = require("express");
 const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
 const role_1 = require("../middleware/role");
+const asyncHandler_1 = require("../utils/asyncHandler");
 const zod_1 = require("zod");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
@@ -56,7 +57,7 @@ router.get("/me", (0, role_1.requireRole)("student"), async (req, res) => {
     }
 });
 // GET /students/me/assignments — darajaga qarab filtrlangan vazifalar
-router.get("/me/assignments", (0, role_1.requireRole)("student"), async (req, res) => {
+router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandler_1.ah)(async (req, res) => {
     const studentId = req.user.sub;
     let profileRes;
     try {
@@ -81,22 +82,36 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), async (req, re
      WHERE asub.student_id = $1
        AND asub.progress_state = 'done_pending'`, [studentId]);
     const pendingLevels = new Set(pendingRes.rows.map((r) => r.difficulty_level));
-    const baseLevel = profile.difficulty_level;
+    const rawLevel = profile.difficulty_level;
+    const baseLevel = rawLevel === "medium" || rawLevel === "high" ? rawLevel : "low";
     const visibleLevel = canSeeHigherLevel(baseLevel, pendingLevels);
     const visibleLevels = visibleLevel === "high"
         ? ["low", "medium", "high"]
         : visibleLevel === "medium"
             ? ["low", "medium"]
             : ["low"];
-    const { rows } = await pool_1.pool.query(`SELECT a.*, json_build_object('name', sub.name) AS subjects
-     FROM assignments a
-     JOIN subjects sub ON sub.id = a.subject_id
-     WHERE a.class_id = $1
-       AND (
-         a.difficulty_level = ANY($2::difficulty_level[])
-         OR (a.is_for_disabled = TRUE AND $3 = TRUE)
-       )
-     ORDER BY a.created_at DESC`, [profile.class_id, visibleLevels, profile.is_disabled]);
+    let rows = [];
+    try {
+        const result = await pool_1.pool.query(`SELECT a.*, json_build_object('name', sub.name) AS subjects
+       FROM assignments a
+       JOIN subjects sub ON sub.id = a.subject_id
+       WHERE a.class_id = $1
+         AND (
+           a.difficulty_level::text = ANY($2::text[])
+           OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)
+         )
+       ORDER BY a.created_at DESC`, [profile.class_id, visibleLevels, Boolean(profile.is_disabled)]);
+        rows = result.rows;
+    }
+    catch {
+        // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
+        const result = await pool_1.pool.query(`SELECT a.*, json_build_object('name', sub.name) AS subjects
+       FROM assignments a
+       JOIN subjects sub ON sub.id = a.subject_id
+       WHERE a.class_id = $1
+       ORDER BY a.created_at DESC`, [profile.class_id]);
+        rows = result.rows;
+    }
     const studentSubmissions = await pool_1.pool.query(`SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`, [studentId]);
     const progressByAssignment = new Map();
     for (const row of studentSubmissions.rows) {
@@ -114,7 +129,7 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), async (req, re
         visible_level: visibleLevel,
         ready_for_test: noMoreAtHigh,
     });
-});
+}));
 // GET /students/me/dashboard — student dashboard data
 router.get("/me/dashboard", (0, role_1.requireRole)("student"), async (req, res) => {
     const studentId = req.user.sub;
