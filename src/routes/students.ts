@@ -4,6 +4,7 @@ import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/role";
 import type { AuthRequest } from "../types";
 import { ah } from "../utils/asyncHandler";
+import { logger } from "../utils/logger";
 
 import { z } from "zod";
 
@@ -113,20 +114,21 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
       ? ["low", "medium"]
       : ["low"];
 
+  const regRes = await pool.query(
+    `SELECT to_regclass('public.assignment_classes') IS NOT NULL AS has_assignment_classes`
+  );
+  const hasAssignmentClasses = Boolean(regRes.rows[0]?.has_assignment_classes);
+  const classMatchSql = hasAssignmentClasses
+    ? `(a.class_id = $1 OR EXISTS (SELECT 1 FROM assignment_classes ac WHERE ac.assignment_id = a.id AND ac.class_id = $1))`
+    : `a.class_id = $1`;
+
   let rows: AssignmentForStudent[] = [];
   try {
     const result = await pool.query(
-      `SELECT a.*, json_build_object('name', sub.name) AS subjects
+      `SELECT a.*, a.deadline AS due_date, json_build_object('name', sub.name) AS subjects
        FROM assignments a
        JOIN subjects sub ON sub.id = a.subject_id
-       WHERE (
-         a.class_id = $1
-         OR EXISTS (
-           SELECT 1
-           FROM assignment_classes ac
-           WHERE ac.assignment_id = a.id AND ac.class_id = $1
-         )
-       )
+       WHERE ${classMatchSql}
          AND (
            COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
            OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)
@@ -138,10 +140,10 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
   } catch {
     // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
     const result = await pool.query(
-      `SELECT a.*, json_build_object('name', sub.name) AS subjects
+      `SELECT a.*, a.deadline AS due_date, json_build_object('name', sub.name) AS subjects
        FROM assignments a
        JOIN subjects sub ON sub.id = a.subject_id
-       WHERE a.class_id = $1
+       WHERE ${classMatchSql}
        ORDER BY a.created_at DESC`,
       [profile.class_id]
     );
@@ -166,6 +168,15 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
     !enriched.some((a) =>
       a.difficulty_level === "high" && a.my_progress_state !== "done_approved"
     );
+
+  logger.info("GET /students/me/assignments result", {
+    studentId,
+    classId: profile.class_id,
+    baseLevel,
+    visibleLevel,
+    hasAssignmentClasses,
+    count: enriched.length,
+  });
 
   res.json({
     assignments: enriched,
