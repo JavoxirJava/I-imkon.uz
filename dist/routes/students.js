@@ -97,7 +97,7 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
        JOIN subjects sub ON sub.id = a.subject_id
        WHERE a.class_id = $1
          AND (
-           a.difficulty_level::text = ANY($2::text[])
+           COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
            OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)
          )
        ORDER BY a.created_at DESC`, [profile.class_id, visibleLevels, Boolean(profile.is_disabled)]);
