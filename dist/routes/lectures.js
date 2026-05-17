@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const zod_1 = require("zod");
@@ -99,9 +132,91 @@ router.post("/:id/subtitles", (0, asyncHandler_1.ah)(async (req, res) => {
         res.status(400).json({ error: "vtt_url kerak" });
         return;
     }
-    await pool_1.pool.query(`INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
-     VALUES ($1,$2,$3,$4)
-     ON CONFLICT (lecture_id, language) DO UPDATE SET vtt_url=EXCLUDED.vtt_url, source=EXCLUDED.source`, [req.params.id, vtt_url, language ?? "uz", source ?? "ai"]);
+    const lang = language ?? "uz";
+    const updated = await pool_1.pool.query(`UPDATE lecture_subtitles
+     SET vtt_url=$1, source=$2
+     WHERE lecture_id=$3 AND language=$4
+     RETURNING id`, [vtt_url, source ?? "ai", req.params.id, lang]);
+    if (!updated.rows[0]) {
+        await pool_1.pool.query(`INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
+       VALUES ($1,$2,$3,$4)`, [req.params.id, vtt_url, lang, source ?? "ai"]);
+    }
+    res.json({ ok: true });
+}));
+// POST /lectures/pdf-text
+router.post("/pdf-text", (0, asyncHandler_1.ah)(async (req, res) => {
+    const { url } = req.body;
+    if (!url) {
+        res.status(400).json({ error: "url kerak" });
+        return;
+    }
+    const fileRes = await fetch(url);
+    if (!fileRes.ok) {
+        res.status(400).json({ error: "PDF yuklab bo'lmadi" });
+        return;
+    }
+    const contentType = fileRes.headers.get("content-type") ?? "";
+    if (!contentType.includes("pdf") && !url.toLowerCase().includes(".pdf")) {
+        res.status(400).json({ error: "Fayl PDF emas" });
+        return;
+    }
+    const { PDFParse } = await Promise.resolve().then(() => __importStar(require("pdf-parse")));
+    const parser = new PDFParse({ data: Buffer.from(await fileRes.arrayBuffer()) });
+    const parsed = await parser.getText();
+    await parser.destroy();
+    const text = parsed.text.replace(/\s+/g, " ").trim();
+    if (!text) {
+        res.status(422).json({ error: "PDF ichida o'qiladigan matn topilmadi" });
+        return;
+    }
+    res.json({ text });
+}));
+// PUT /lectures/:id
+const UpdateLectureSchema = zod_1.z.object({
+    subject_id: zod_1.z.string().uuid(),
+    class_id: zod_1.z.string().uuid().nullable().optional(),
+    title: zod_1.z.string().min(1).max(500),
+    description: zod_1.z.string().nullable().optional(),
+    content_type: zod_1.z.enum(["pdf", "video", "audio", "ppt"]),
+    file_url: zod_1.z.string().url(),
+    subtitle_vtt_url: zod_1.z.string().url().nullable().optional(),
+    subtitle_source: zod_1.z.enum(["manual", "ai"]).optional(),
+});
+router.put("/:id", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
+    const parsed = UpdateLectureSchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message });
+        return;
+    }
+    const d = parsed.data;
+    const { rows } = await pool_1.pool.query(`UPDATE lectures
+     SET subject_id=$1, class_id=$2, title=$3, description=$4, content_type=$5, file_url=$6
+     WHERE id=$7 AND (creator_id=$8 OR $9='super_admin')
+     RETURNING id`, [
+        d.subject_id,
+        d.class_id ?? null,
+        d.title,
+        d.description ?? null,
+        d.content_type,
+        d.file_url,
+        req.params.id,
+        req.user.sub,
+        req.user.role,
+    ]);
+    if (!rows[0]) {
+        res.status(404).json({ error: "Topilmadi yoki ruxsat yo'q" });
+        return;
+    }
+    if (d.subtitle_vtt_url) {
+        const updated = await pool_1.pool.query(`UPDATE lecture_subtitles
+       SET vtt_url=$1, source=$2
+       WHERE lecture_id=$3 AND language='uz'
+       RETURNING id`, [d.subtitle_vtt_url, d.subtitle_source ?? "manual", req.params.id]);
+        if (!updated.rows[0]) {
+            await pool_1.pool.query(`INSERT INTO lecture_subtitles (lecture_id, vtt_url, language, source)
+         VALUES ($1,$2,'uz',$3)`, [req.params.id, d.subtitle_vtt_url, d.subtitle_source ?? "manual"]);
+        }
+    }
     res.json({ ok: true });
 }));
 // DELETE /lectures/:id

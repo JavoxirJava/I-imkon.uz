@@ -7,39 +7,113 @@ const role_1 = require("../middleware/role");
 const zod_1 = require("zod");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
+function canSeeHigherLevel(baseLevel, pendingLevels) {
+    if (baseLevel === "low" && pendingLevels.has("low"))
+        return "medium";
+    if (baseLevel === "medium" && pendingLevels.has("medium"))
+        return "high";
+    if (baseLevel === "low" && pendingLevels.has("medium"))
+        return "high";
+    return baseLevel;
+}
 // GET /students/me — o'z profili
 router.get("/me", (0, role_1.requireRole)("student"), async (req, res) => {
-    const { rows } = await pool_1.pool.query(`SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
-            sp.class_id, sp.school_id, sp.approved_at,
-            sp.difficulty_level, sp.is_disabled,
-            c.grade, c.letter,
-            s.name AS school_name
-     FROM users u
-     LEFT JOIN student_profiles sp ON sp.user_id = u.id
-     LEFT JOIN classes c ON c.id = sp.class_id
-     LEFT JOIN schools s ON s.id = sp.school_id
-     WHERE u.id = $1`, [req.user.sub]);
-    res.json(rows[0] ?? null);
+    try {
+        const { rows } = await pool_1.pool.query(`SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
+              sp.class_id, sp.school_id, sp.approved_at,
+              sp.difficulty_level, sp.level_progress_score, sp.is_disabled,
+              c.grade, c.letter,
+              s.name AS school_name
+       FROM users u
+       LEFT JOIN student_profiles sp ON sp.user_id = u.id
+       LEFT JOIN classes c ON c.id = sp.class_id
+       LEFT JOIN schools s ON s.id = sp.school_id
+       WHERE u.id = $1`, [req.user.sub]);
+        res.json(rows[0] ?? null);
+    }
+    catch {
+        // Legacy schema fallback (difficulty columns not yet migrated)
+        const { rows } = await pool_1.pool.query(`SELECT u.id, u.first_name, u.last_name, u.phone, u.status,
+              sp.class_id, sp.school_id, sp.approved_at,
+              c.grade, c.letter,
+              s.name AS school_name
+       FROM users u
+       LEFT JOIN student_profiles sp ON sp.user_id = u.id
+       LEFT JOIN classes c ON c.id = sp.class_id
+       LEFT JOIN schools s ON s.id = sp.school_id
+       WHERE u.id = $1`, [req.user.sub]);
+        const row = rows[0] ?? null;
+        if (!row) {
+            res.json(null);
+            return;
+        }
+        res.json({
+            ...row,
+            difficulty_level: "low",
+            level_progress_score: 3,
+            is_disabled: false,
+        });
+    }
 });
 // GET /students/me/assignments — darajaga qarab filtrlangan vazifalar
 router.get("/me/assignments", (0, role_1.requireRole)("student"), async (req, res) => {
     const studentId = req.user.sub;
-    const profileRes = await pool_1.pool.query(`SELECT class_id, difficulty_level, is_disabled FROM student_profiles WHERE user_id = $1`, [studentId]);
+    let profileRes;
+    try {
+        profileRes = await pool_1.pool.query(`SELECT class_id, difficulty_level, is_disabled FROM student_profiles WHERE user_id = $1`, [studentId]);
+    }
+    catch {
+        profileRes = await pool_1.pool.query(`SELECT class_id FROM student_profiles WHERE user_id = $1`, [studentId]);
+        profileRes.rows = profileRes.rows.map((r) => ({
+            ...r,
+            difficulty_level: "low",
+            is_disabled: false,
+        }));
+    }
     const profile = profileRes.rows[0];
     if (!profile?.class_id) {
         res.json([]);
         return;
     }
+    const pendingRes = await pool_1.pool.query(`SELECT DISTINCT a.difficulty_level
+     FROM assignment_submissions asub
+     JOIN assignments a ON a.id = asub.assignment_id
+     WHERE asub.student_id = $1
+       AND asub.progress_state = 'done_pending'`, [studentId]);
+    const pendingLevels = new Set(pendingRes.rows.map((r) => r.difficulty_level));
+    const baseLevel = profile.difficulty_level;
+    const visibleLevel = canSeeHigherLevel(baseLevel, pendingLevels);
+    const visibleLevels = visibleLevel === "high"
+        ? ["low", "medium", "high"]
+        : visibleLevel === "medium"
+            ? ["low", "medium"]
+            : ["low"];
     const { rows } = await pool_1.pool.query(`SELECT a.*, json_build_object('name', sub.name) AS subjects
      FROM assignments a
      JOIN subjects sub ON sub.id = a.subject_id
      WHERE a.class_id = $1
        AND (
-         a.difficulty_level = $2
+         a.difficulty_level = ANY($2::difficulty_level[])
          OR (a.is_for_disabled = TRUE AND $3 = TRUE)
        )
-     ORDER BY a.created_at DESC`, [profile.class_id, profile.difficulty_level, profile.is_disabled]);
-    res.json(rows);
+     ORDER BY a.created_at DESC`, [profile.class_id, visibleLevels, profile.is_disabled]);
+    const studentSubmissions = await pool_1.pool.query(`SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`, [studentId]);
+    const progressByAssignment = new Map();
+    for (const row of studentSubmissions.rows) {
+        progressByAssignment.set(row.assignment_id, row.progress_state);
+    }
+    const enriched = rows.map((a) => ({
+        ...a,
+        my_progress_state: progressByAssignment.get(a.id) ?? null,
+    }));
+    const noMoreAtHigh = baseLevel === "high" &&
+        !enriched.some((a) => a.difficulty_level === "high" && a.my_progress_state !== "done_approved");
+    res.json({
+        assignments: enriched,
+        level: baseLevel,
+        visible_level: visibleLevel,
+        ready_for_test: noMoreAtHigh,
+    });
 });
 // GET /students/me/dashboard — student dashboard data
 router.get("/me/dashboard", (0, role_1.requireRole)("student"), async (req, res) => {

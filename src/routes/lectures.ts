@@ -133,6 +133,40 @@ router.post("/:id/subtitles", ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// POST /lectures/pdf-text
+router.post("/pdf-text", ah(async (req, res) => {
+  const { url } = req.body as { url?: string };
+  if (!url) {
+    res.status(400).json({ error: "url kerak" });
+    return;
+  }
+
+  const fileRes = await fetch(url);
+  if (!fileRes.ok) {
+    res.status(400).json({ error: "PDF yuklab bo'lmadi" });
+    return;
+  }
+
+  const contentType = fileRes.headers.get("content-type") ?? "";
+  if (!contentType.includes("pdf") && !url.toLowerCase().includes(".pdf")) {
+    res.status(400).json({ error: "Fayl PDF emas" });
+    return;
+  }
+
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: Buffer.from(await fileRes.arrayBuffer()) });
+  const parsed = await parser.getText();
+  await parser.destroy();
+
+  const text = parsed.text.replace(/\s+/g, " ").trim();
+  if (!text) {
+    res.status(422).json({ error: "PDF ichida o'qiladigan matn topilmadi" });
+    return;
+  }
+
+  res.json({ text });
+}));
+
 // PUT /lectures/:id
 const UpdateLectureSchema = z.object({
   subject_id:    z.string().uuid(),

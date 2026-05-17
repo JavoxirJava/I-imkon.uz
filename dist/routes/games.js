@@ -41,6 +41,7 @@ const GameSchema = zod_1.z.object({
     title: zod_1.z.string().min(1),
     template_type: zod_1.z.enum(["word_match", "ordering", "memory"]),
     subject_id: zod_1.z.string().uuid(),
+    external_url: zod_1.z.string().url().optional().or(zod_1.z.literal("")),
     content_json: zod_1.z.record(zod_1.z.unknown()).default({}),
     class_ids: zod_1.z.array(zod_1.z.string().uuid()).default([]),
 });
@@ -51,8 +52,8 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, 
         return;
     }
     const d = parsed.data;
-    const { rows } = await pool_1.pool.query(`INSERT INTO games (teacher_id, template_type, subject_id, title, content_json)
-     VALUES ($1,$2,$3,$4,$5) RETURNING id`, [req.user.sub, d.template_type, d.subject_id, d.title, JSON.stringify(d.content_json)]);
+    const { rows } = await pool_1.pool.query(`INSERT INTO games (teacher_id, template_type, subject_id, title, external_url, content_json)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [req.user.sub, d.template_type, d.subject_id, d.title, d.external_url || null, JSON.stringify(d.content_json)]);
     const gameId = rows[0].id;
     if (d.class_ids.length > 0) {
         await pool_1.pool.query(`INSERT INTO game_classes (game_id, class_id) SELECT $1, unnest($2::uuid[])`, [gameId, d.class_ids]);

@@ -9,6 +9,39 @@ const asyncHandler_1 = require("../utils/asyncHandler");
 const logger_1 = require("../utils/logger");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
+function promoteLevel(level) {
+    if (level === "low")
+        return "medium";
+    if (level === "medium")
+        return "high";
+    return "high";
+}
+function demoteLevel(level) {
+    if (level === "high")
+        return "medium";
+    if (level === "medium")
+        return "low";
+    return "low";
+}
+async function applyLevelDelta(studentId, delta) {
+    const profileRes = await pool_1.pool.query("SELECT difficulty_level, level_progress_score FROM student_profiles WHERE user_id=$1", [studentId]);
+    const profile = profileRes.rows[0];
+    if (!profile)
+        return;
+    const baseScore = profile.level_progress_score ?? 3;
+    const nextScore = Math.max(0, Math.min(6, baseScore + delta));
+    if (nextScore >= 6) {
+        const nextLevel = promoteLevel(profile.difficulty_level);
+        await pool_1.pool.query("UPDATE student_profiles SET difficulty_level=$1, level_progress_score=3 WHERE user_id=$2", [nextLevel, studentId]);
+        return;
+    }
+    if (nextScore <= 0) {
+        const nextLevel = demoteLevel(profile.difficulty_level);
+        await pool_1.pool.query("UPDATE student_profiles SET difficulty_level=$1, level_progress_score=3 WHERE user_id=$2", [nextLevel, studentId]);
+        return;
+    }
+    await pool_1.pool.query("UPDATE student_profiles SET level_progress_score=$1 WHERE user_id=$2", [nextScore, studentId]);
+}
 router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
     const { teacher_id, class_id } = req.query;
     if (teacher_id) {
@@ -72,8 +105,9 @@ router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), (0, asy
 }));
 // GET /assignments/:id/submissions
 router.get("/:id/submissions", (0, role_1.requireRole)("teacher", "director", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
-    const { rows } = await pool_1.pool.query(`SELECT asub.*, u.first_name, u.last_name
+    const { rows } = await pool_1.pool.query(`SELECT asub.*, a.difficulty_level, u.first_name, u.last_name
      FROM assignment_submissions asub
+     JOIN assignments a ON a.id = asub.assignment_id
      JOIN users u ON u.id = asub.student_id
      WHERE asub.assignment_id=$1
      ORDER BY asub.submitted_at DESC`, [req.params.id]);
@@ -95,10 +129,87 @@ router.post("/:id/submit", (0, role_1.requireRole)("student"), (0, asyncHandler_
         res.status(201).json({ id: rows[0].id });
     }
 }));
+// POST /assignments/:id/progress (student: bajardim / bajara olmadim)
+router.post("/:id/progress", (0, role_1.requireRole)("student"), (0, asyncHandler_1.ah)(async (req, res) => {
+    const parsed = zod_1.z.object({
+        action: zod_1.z.enum(["done", "cannot_do"]),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: "action noto'g'ri" });
+        return;
+    }
+    const studentId = req.user.sub;
+    const assignmentId = req.params.id;
+    const assignmentRes = await pool_1.pool.query("SELECT id, class_id, difficulty_level FROM assignments WHERE id=$1", [assignmentId]);
+    const assignment = assignmentRes.rows[0];
+    if (!assignment) {
+        res.status(404).json({ error: "Topshiriq topilmadi" });
+        return;
+    }
+    const profileRes = await pool_1.pool.query("SELECT class_id FROM student_profiles WHERE user_id=$1", [studentId]);
+    const profile = profileRes.rows[0];
+    if (!profile) {
+        res.status(400).json({ error: "O'quvchi profili topilmadi" });
+        return;
+    }
+    if (profile.class_id !== assignment.class_id) {
+        res.status(403).json({ error: "Bu topshiriq sizga tegishli emas" });
+        return;
+    }
+    const progressState = parsed.data.action === "done" ? "done_pending" : "cannot_do";
+    const { rows: existing } = await pool_1.pool.query("SELECT id FROM assignment_submissions WHERE assignment_id=$1 AND student_id=$2", [assignmentId, studentId]);
+    let submissionId;
+    if (existing.length > 0) {
+        submissionId = existing[0].id;
+        await pool_1.pool.query(`UPDATE assignment_submissions
+       SET submitted_at=NOW(), progress_state=$1, teacher_reviewed_at=NULL, teacher_reviewed_by=NULL
+       WHERE id=$2`, [progressState, submissionId]);
+    }
+    else {
+        const inserted = await pool_1.pool.query(`INSERT INTO assignment_submissions (assignment_id, student_id, progress_state)
+       VALUES ($1,$2,$3) RETURNING id`, [assignmentId, studentId, progressState]);
+        submissionId = inserted.rows[0].id;
+    }
+    if (parsed.data.action === "cannot_do")
+        await applyLevelDelta(studentId, -1);
+    res.status(200).json({ id: submissionId, progress_state: progressState });
+}));
 // GET /assignments/:id/submission (student o'zining topshirig'ini ko'radi)
 router.get("/:id/submission", (0, role_1.requireRole)("student"), (0, asyncHandler_1.ah)(async (req, res) => {
     const { rows } = await pool_1.pool.query("SELECT * FROM assignment_submissions WHERE assignment_id=$1 AND student_id=$2", [req.params.id, req.user.sub]);
     res.json(rows[0] ?? null);
+}));
+// PUT /assignments/submissions/:submissionId/progress-review (teacher approve/reject)
+router.put("/submissions/:submissionId/progress-review", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
+    const parsed = zod_1.z.object({
+        decision: zod_1.z.enum(["approve", "reject"]),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: "decision noto'g'ri" });
+        return;
+    }
+    const subRes = await pool_1.pool.query(`SELECT asub.id, asub.student_id, asub.progress_state, a.teacher_id, a.difficulty_level
+     FROM assignment_submissions asub
+     JOIN assignments a ON a.id = asub.assignment_id
+     WHERE asub.id=$1`, [req.params.submissionId]);
+    const submission = subRes.rows[0];
+    if (!submission) {
+        res.status(404).json({ error: "Submission topilmadi" });
+        return;
+    }
+    if (req.user.role !== "super_admin" && submission.teacher_id !== req.user.sub) {
+        res.status(403).json({ error: "Ruxsat yo'q" });
+        return;
+    }
+    if (submission.progress_state !== "done_pending") {
+        res.status(400).json({ error: "Tasdiqlash uchun holat mos emas" });
+        return;
+    }
+    await applyLevelDelta(submission.student_id, parsed.data.decision === "approve" ? 1 : -1);
+    await pool_1.pool.query(`UPDATE assignment_submissions
+     SET progress_state=$1, teacher_reviewed_at=NOW(), teacher_reviewed_by=$2
+     WHERE id=$3`, [parsed.data.decision === "approve" ? "done_approved" : "done_rejected", req.user.sub, req.params.submissionId]);
+    res.json({ ok: true });
 }));
 // PUT /submissions/:submissionId/grade (teacher)
 router.put("/submissions/:submissionId/grade", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
