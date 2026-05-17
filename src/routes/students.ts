@@ -93,14 +93,20 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
   const profile = profileRes.rows[0];
   if (!profile?.class_id) { res.json([]); return; }
 
-  const pendingRes = await pool.query(
-    `SELECT DISTINCT a.difficulty_level
-     FROM assignment_submissions asub
-     JOIN assignments a ON a.id = asub.assignment_id
-     WHERE asub.student_id = $1
-       AND asub.progress_state = 'done_pending'`,
-    [studentId]
-  );
+  let pendingRes;
+  try {
+    pendingRes = await pool.query(
+      `SELECT DISTINCT a.difficulty_level
+       FROM assignment_submissions asub
+       JOIN assignments a ON a.id = asub.assignment_id
+       WHERE asub.student_id = $1
+         AND asub.progress_state = 'done_pending'`,
+      [studentId]
+    );
+  } catch {
+    // Legacy schema: assignment_submissions.progress_state bo'lmasligi mumkin
+    pendingRes = { rows: [] as Array<{ difficulty_level: DifficultyLevel }> };
+  }
   const pendingLevels = new Set(
     pendingRes.rows.map((r: { difficulty_level: DifficultyLevel }) => r.difficulty_level)
   );
@@ -150,10 +156,19 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
     rows = result.rows as AssignmentForStudent[];
   }
 
-  const studentSubmissions = await pool.query(
-    `SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`,
-    [studentId]
-  );
+  let studentSubmissions;
+  try {
+    studentSubmissions = await pool.query(
+      `SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`,
+      [studentId]
+    );
+  } catch {
+    // Legacy schema fallback: progress_state yo'q bo'lsa assignment_id ni olib, holatni null deb qo'yamiz
+    studentSubmissions = await pool.query(
+      `SELECT assignment_id, NULL::text AS progress_state FROM assignment_submissions WHERE student_id=$1`,
+      [studentId]
+    );
+  }
   const progressByAssignment = new Map<string, string | null>();
   for (const row of studentSubmissions.rows as Array<{ assignment_id: string; progress_state: string | null }>) {
     progressByAssignment.set(row.assignment_id, row.progress_state);

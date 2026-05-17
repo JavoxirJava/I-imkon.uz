@@ -77,11 +77,18 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
         res.json([]);
         return;
     }
-    const pendingRes = await pool_1.pool.query(`SELECT DISTINCT a.difficulty_level
-     FROM assignment_submissions asub
-     JOIN assignments a ON a.id = asub.assignment_id
-     WHERE asub.student_id = $1
-       AND asub.progress_state = 'done_pending'`, [studentId]);
+    let pendingRes;
+    try {
+        pendingRes = await pool_1.pool.query(`SELECT DISTINCT a.difficulty_level
+       FROM assignment_submissions asub
+       JOIN assignments a ON a.id = asub.assignment_id
+       WHERE asub.student_id = $1
+         AND asub.progress_state = 'done_pending'`, [studentId]);
+    }
+    catch {
+        // Legacy schema: assignment_submissions.progress_state bo'lmasligi mumkin
+        pendingRes = { rows: [] };
+    }
     const pendingLevels = new Set(pendingRes.rows.map((r) => r.difficulty_level));
     const rawLevel = profile.difficulty_level;
     const baseLevel = rawLevel === "medium" || rawLevel === "high" ? rawLevel : "low";
@@ -118,7 +125,14 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
        ORDER BY a.created_at DESC`, [profile.class_id]);
         rows = result.rows;
     }
-    const studentSubmissions = await pool_1.pool.query(`SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`, [studentId]);
+    let studentSubmissions;
+    try {
+        studentSubmissions = await pool_1.pool.query(`SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`, [studentId]);
+    }
+    catch {
+        // Legacy schema fallback: progress_state yo'q bo'lsa assignment_id ni olib, holatni null deb qo'yamiz
+        studentSubmissions = await pool_1.pool.query(`SELECT assignment_id, NULL::text AS progress_state FROM assignment_submissions WHERE student_id=$1`, [studentId]);
+    }
     const progressByAssignment = new Map();
     for (const row of studentSubmissions.rows) {
         progressByAssignment.set(row.assignment_id, row.progress_state);
