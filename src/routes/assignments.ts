@@ -251,6 +251,7 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
   );
   const assignmentId = rows[0].id as string;
 
+  let multiClassMappingSaved = false;
   try {
     for (const classId of uniqueClassIds) {
       await pool.query(
@@ -260,6 +261,7 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
         [assignmentId, classId]
       );
     }
+    multiClassMappingSaved = true;
   } catch {
     // Jadval yo'q bo'lsa bir marta yaratib, class mapping'ni qayta yozamiz.
     try {
@@ -278,9 +280,18 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
           [assignmentId, classId]
         );
       }
+      multiClassMappingSaved = true;
     } catch {
       // Agar yaratish huquqi bo'lmasa, legacy class_id bilan ishlashda davom etadi.
     }
+  }
+
+  if (uniqueClassIds.length > 1 && !multiClassMappingSaved) {
+    await pool.query("DELETE FROM assignments WHERE id = $1", [assignmentId]);
+    res.status(500).json({
+      error: "Bir nechta sinf uchun assignment_classes jadvali kerak. Admin migratsiyani ishga tushirsin.",
+    });
+    return;
   }
   logger.info("POST /assignments: created", { assignmentId, classIds: uniqueClassIds, user: req.user?.sub });
   res.status(201).json({ id: assignmentId });
