@@ -161,8 +161,16 @@ router.post("/pdf-text", (0, asyncHandler_1.ah)(async (req, res) => {
         return;
     }
     const pdfParseModuleName = "pdf-parse";
-    const { PDFParse } = await Promise.resolve(`${pdfParseModuleName}`).then(s => __importStar(require(s)));
-    const parser = new PDFParse({ data: Buffer.from(await fileRes.arrayBuffer()) });
+    let PDFParseCtor;
+    try {
+        const mod = await Promise.resolve(`${pdfParseModuleName}`).then(s => __importStar(require(s)));
+        PDFParseCtor = mod.PDFParse;
+    }
+    catch {
+        res.status(500).json({ error: "Serverda PDF parser o'rnatilmagan" });
+        return;
+    }
+    const parser = new PDFParseCtor({ data: Buffer.from(await fileRes.arrayBuffer()) });
     const parsed = await parser.getText();
     await parser.destroy();
     const text = parsed.text.replace(/\s+/g, " ").trim();
