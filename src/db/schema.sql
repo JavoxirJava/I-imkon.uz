@@ -203,6 +203,15 @@ CREATE TABLE assignments (
 
 CREATE INDEX idx_assignments_class ON assignments(class_id);
 
+-- Multi-class assignment mapping (new model; class_id remains as primary/legacy)
+CREATE TABLE IF NOT EXISTS assignment_classes (
+  assignment_id UUID NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  class_id      UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  PRIMARY KEY (assignment_id, class_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_classes_class ON assignment_classes(class_id);
+
 CREATE TABLE assignment_submissions (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   assignment_id UUID NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
