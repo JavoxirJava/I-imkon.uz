@@ -261,7 +261,26 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
       );
     }
   } catch {
-    // assignment_classes jadvali bo'lmasa legacy class_id bilan ishlashda davom etadi.
+    // Jadval yo'q bo'lsa bir marta yaratib, class mapping'ni qayta yozamiz.
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS assignment_classes (
+          assignment_id uuid NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+          class_id uuid NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+          PRIMARY KEY (assignment_id, class_id)
+        )
+      `);
+      for (const classId of uniqueClassIds) {
+        await pool.query(
+          `INSERT INTO assignment_classes (assignment_id, class_id)
+           VALUES ($1,$2)
+           ON CONFLICT (assignment_id, class_id) DO NOTHING`,
+          [assignmentId, classId]
+        );
+      }
+    } catch {
+      // Agar yaratish huquqi bo'lmasa, legacy class_id bilan ishlashda davom etadi.
+    }
   }
   logger.info("POST /assignments: created", { assignmentId, classIds: uniqueClassIds, user: req.user?.sub });
   res.status(201).json({ id: assignmentId });
