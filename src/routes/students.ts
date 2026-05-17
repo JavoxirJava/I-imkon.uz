@@ -119,7 +119,14 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
       `SELECT a.*, json_build_object('name', sub.name) AS subjects
        FROM assignments a
        JOIN subjects sub ON sub.id = a.subject_id
-       WHERE a.class_id = $1
+       WHERE (
+         a.class_id = $1
+         OR EXISTS (
+           SELECT 1
+           FROM assignment_classes ac
+           WHERE ac.assignment_id = a.id AND ac.class_id = $1
+         )
+       )
          AND (
            COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
            OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)

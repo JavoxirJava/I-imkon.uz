@@ -68,17 +68,61 @@ router.get("/", ah(async (req, res) => {
   const { teacher_id, class_id } = req.query as Record<string, string>;
   if (teacher_id) {
     const { rows } = await pool.query(
-      `SELECT a.*, sub.name AS subject_name FROM assignments a
+      `SELECT a.*,
+              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+              COALESCE(
+                (
+                  SELECT json_agg(
+                    json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
+                    ORDER BY c2.grade, c2.letter
+                  )
+                  FROM assignment_classes ac
+                  JOIN classes c2 ON c2.id = ac.class_id
+                  WHERE ac.assignment_id = a.id
+                ),
+                CASE
+                  WHEN c.id IS NOT NULL
+                    THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
+                  ELSE '[]'::json
+                END
+              ) AS classes
+       FROM assignments a
        JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN classes c ON c.id = a.class_id
        WHERE a.teacher_id=$1 ORDER BY a.created_at DESC`,
       [teacher_id]
     );
     res.json(rows);
   } else if (class_id) {
     const { rows } = await pool.query(
-      `SELECT a.*, sub.name AS subject_name FROM assignments a
+      `SELECT a.*,
+              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+              COALESCE(
+                (
+                  SELECT json_agg(
+                    json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
+                    ORDER BY c2.grade, c2.letter
+                  )
+                  FROM assignment_classes ac
+                  JOIN classes c2 ON c2.id = ac.class_id
+                  WHERE ac.assignment_id = a.id
+                ),
+                CASE
+                  WHEN c.id IS NOT NULL
+                    THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
+                  ELSE '[]'::json
+                END
+              ) AS classes
+       FROM assignments a
        JOIN subjects sub ON sub.id = a.subject_id
-       WHERE a.class_id=$1 ORDER BY a.created_at DESC`,
+       LEFT JOIN classes c ON c.id = a.class_id
+       WHERE (
+         a.class_id = $1 OR EXISTS (
+           SELECT 1 FROM assignment_classes ac
+           WHERE ac.assignment_id = a.id AND ac.class_id = $1
+         )
+       )
+       ORDER BY a.created_at DESC`,
       [class_id]
     );
     res.json(rows);
@@ -89,8 +133,28 @@ router.get("/", ah(async (req, res) => {
 
 router.get("/:id", ah(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT a.*, sub.name AS subject_name FROM assignments a
-     JOIN subjects sub ON sub.id = a.subject_id WHERE a.id=$1`,
+    `SELECT a.*,
+            json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            COALESCE(
+              (
+                SELECT json_agg(
+                  json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
+                  ORDER BY c2.grade, c2.letter
+                )
+                FROM assignment_classes ac
+                JOIN classes c2 ON c2.id = ac.class_id
+                WHERE ac.assignment_id = a.id
+              ),
+              CASE
+                WHEN c.id IS NOT NULL
+                  THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
+                ELSE '[]'::json
+              END
+            ) AS classes
+     FROM assignments a
+     JOIN subjects sub ON sub.id = a.subject_id
+     LEFT JOIN classes c ON c.id = a.class_id
+     WHERE a.id=$1`,
     [req.params.id]
   );
   if (!rows[0]) { res.status(404).json({ error: "Topilmadi" }); return; }
@@ -120,18 +184,30 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
   }
   const d = parsed.data;
 
-  const ids: string[] = [];
-  for (const classId of d.class_ids) {
-    const { rows } = await pool.query(
-      `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, difficulty_level, is_for_disabled)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [req.user!.sub, d.subject_id, classId, d.title, d.description ?? null,
-       d.deadline ?? null, d.max_score, d.file_url ?? null, d.difficulty_level, d.is_for_disabled]
-    );
-    ids.push(rows[0].id);
+  const uniqueClassIds = [...new Set(d.class_ids)];
+  const primaryClassId = uniqueClassIds[0];
+  const { rows } = await pool.query(
+    `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, difficulty_level, is_for_disabled)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    [req.user!.sub, d.subject_id, primaryClassId, d.title, d.description ?? null,
+      d.deadline ?? null, d.max_score, d.file_url ?? null, d.difficulty_level, d.is_for_disabled]
+  );
+  const assignmentId = rows[0].id as string;
+
+  try {
+    for (const classId of uniqueClassIds) {
+      await pool.query(
+        `INSERT INTO assignment_classes (assignment_id, class_id)
+         VALUES ($1,$2)
+         ON CONFLICT (assignment_id, class_id) DO NOTHING`,
+        [assignmentId, classId]
+      );
+    }
+  } catch {
+    // assignment_classes jadvali bo'lmasa legacy class_id bilan ishlashda davom etadi.
   }
-  logger.info("POST /assignments: created", { ids, user: req.user?.sub });
-  res.status(201).json({ id: ids[0], ids });
+  logger.info("POST /assignments: created", { assignmentId, classIds: uniqueClassIds, user: req.user?.sub });
+  res.status(201).json({ id: assignmentId });
 }));
 
 router.delete("/:id", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
@@ -215,7 +291,22 @@ router.post("/:id/progress", requireRole("student"), ah(async (req: AuthRequest,
     res.status(400).json({ error: "O'quvchi profili topilmadi" });
     return;
   }
-  if (profile.class_id !== assignment.class_id) {
+  let canAccess = profile.class_id === assignment.class_id;
+  if (!canAccess) {
+    try {
+      const accessRes = await pool.query(
+        `SELECT 1
+         FROM assignment_classes
+         WHERE assignment_id = $1 AND class_id = $2
+         LIMIT 1`,
+        [assignmentId, profile.class_id]
+      );
+      canAccess = Boolean(accessRes.rows[0]);
+    } catch {
+      canAccess = profile.class_id === assignment.class_id;
+    }
+  }
+  if (!canAccess) {
     res.status(403).json({ error: "Bu topshiriq sizga tegishli emas" });
     return;
   }
