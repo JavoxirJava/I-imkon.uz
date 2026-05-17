@@ -98,9 +98,9 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
         : `a.class_id = $1`;
     let rows = [];
     try {
-        const result = await pool_1.pool.query(`SELECT a.*, a.deadline AS due_date, json_build_object('name', sub.name) AS subjects
+        const result = await pool_1.pool.query(`SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('name', sub.name) ELSE NULL END AS subjects
        FROM assignments a
-       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE ${classMatchSql}
          AND (
            COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
@@ -111,9 +111,9 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
     }
     catch {
         // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
-        const result = await pool_1.pool.query(`SELECT a.*, a.deadline AS due_date, json_build_object('name', sub.name) AS subjects
+        const result = await pool_1.pool.query(`SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('name', sub.name) ELSE NULL END AS subjects
        FROM assignments a
-       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE ${classMatchSql}
        ORDER BY a.created_at DESC`, [profile.class_id]);
         rows = result.rows;
@@ -136,6 +136,7 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
         visibleLevel,
         hasAssignmentClasses,
         count: enriched.length,
+        assignmentIds: enriched.map((a) => a.id).slice(0, 20),
     });
     res.json({
         assignments: enriched,
