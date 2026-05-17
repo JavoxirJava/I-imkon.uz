@@ -45,88 +45,139 @@ async function applyLevelDelta(studentId, delta) {
 router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
     const { teacher_id, class_id } = req.query;
     if (teacher_id) {
-        const { rows } = await pool_1.pool.query(`SELECT a.*,
-              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
-              COALESCE(
-                (
-                  SELECT json_agg(
-                    json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
-                    ORDER BY c2.grade, c2.letter
-                  )
-                  FROM assignment_classes ac
-                  JOIN classes c2 ON c2.id = ac.class_id
-                  WHERE ac.assignment_id = a.id
-                ),
+        try {
+            const { rows } = await pool_1.pool.query(`SELECT a.*,
+                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+                COALESCE(
+                  (
+                    SELECT json_agg(
+                      json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
+                      ORDER BY c2.grade, c2.letter
+                    )
+                    FROM assignment_classes ac
+                    JOIN classes c2 ON c2.id = ac.class_id
+                    WHERE ac.assignment_id = a.id
+                  ),
+                  CASE
+                    WHEN c.id IS NOT NULL
+                      THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
+                    ELSE '[]'::json
+                  END
+                ) AS classes
+         FROM assignments a
+         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN classes c ON c.id = a.class_id
+         WHERE a.teacher_id=$1 ORDER BY a.created_at DESC`, [teacher_id]);
+            res.json(rows);
+        }
+        catch {
+            const { rows } = await pool_1.pool.query(`SELECT a.*,
+                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
                 CASE
                   WHEN c.id IS NOT NULL
                     THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
                   ELSE '[]'::json
-                END
-              ) AS classes
-       FROM assignments a
-       JOIN subjects sub ON sub.id = a.subject_id
-       LEFT JOIN classes c ON c.id = a.class_id
-       WHERE a.teacher_id=$1 ORDER BY a.created_at DESC`, [teacher_id]);
-        res.json(rows);
+                END AS classes
+         FROM assignments a
+         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN classes c ON c.id = a.class_id
+         WHERE a.teacher_id=$1 ORDER BY a.created_at DESC`, [teacher_id]);
+            res.json(rows);
+        }
     }
     else if (class_id) {
-        const { rows } = await pool_1.pool.query(`SELECT a.*,
-              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
-              COALESCE(
-                (
-                  SELECT json_agg(
-                    json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
-                    ORDER BY c2.grade, c2.letter
-                  )
-                  FROM assignment_classes ac
-                  JOIN classes c2 ON c2.id = ac.class_id
-                  WHERE ac.assignment_id = a.id
-                ),
+        try {
+            const { rows } = await pool_1.pool.query(`SELECT a.*,
+                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+                COALESCE(
+                  (
+                    SELECT json_agg(
+                      json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
+                      ORDER BY c2.grade, c2.letter
+                    )
+                    FROM assignment_classes ac
+                    JOIN classes c2 ON c2.id = ac.class_id
+                    WHERE ac.assignment_id = a.id
+                  ),
+                  CASE
+                    WHEN c.id IS NOT NULL
+                      THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
+                    ELSE '[]'::json
+                  END
+                ) AS classes
+         FROM assignments a
+         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN classes c ON c.id = a.class_id
+         WHERE (
+           a.class_id = $1 OR EXISTS (
+             SELECT 1 FROM assignment_classes ac
+             WHERE ac.assignment_id = a.id AND ac.class_id = $1
+           )
+         )
+         ORDER BY a.created_at DESC`, [class_id]);
+            res.json(rows);
+        }
+        catch {
+            const { rows } = await pool_1.pool.query(`SELECT a.*,
+                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
                 CASE
                   WHEN c.id IS NOT NULL
                     THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
                   ELSE '[]'::json
-                END
-              ) AS classes
-       FROM assignments a
-       JOIN subjects sub ON sub.id = a.subject_id
-       LEFT JOIN classes c ON c.id = a.class_id
-       WHERE (
-         a.class_id = $1 OR EXISTS (
-           SELECT 1 FROM assignment_classes ac
-           WHERE ac.assignment_id = a.id AND ac.class_id = $1
-         )
-       )
-       ORDER BY a.created_at DESC`, [class_id]);
-        res.json(rows);
+                END AS classes
+         FROM assignments a
+         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN classes c ON c.id = a.class_id
+         WHERE a.class_id=$1
+         ORDER BY a.created_at DESC`, [class_id]);
+            res.json(rows);
+        }
     }
     else {
         res.status(400).json({ error: "teacher_id yoki class_id kerak" });
     }
 }));
 router.get("/:id", (0, asyncHandler_1.ah)(async (req, res) => {
-    const { rows } = await pool_1.pool.query(`SELECT a.*,
-            json_build_object('id', sub.id, 'name', sub.name) AS subjects,
-            COALESCE(
-              (
-                SELECT json_agg(
-                  json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
-                  ORDER BY c2.grade, c2.letter
-                )
-                FROM assignment_classes ac
-                JOIN classes c2 ON c2.id = ac.class_id
-                WHERE ac.assignment_id = a.id
-              ),
+    let rows;
+    try {
+        const result = await pool_1.pool.query(`SELECT a.*,
+              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+              COALESCE(
+                (
+                  SELECT json_agg(
+                    json_build_object('id', c2.id, 'grade', c2.grade, 'letter', c2.letter)
+                    ORDER BY c2.grade, c2.letter
+                  )
+                  FROM assignment_classes ac
+                  JOIN classes c2 ON c2.id = ac.class_id
+                  WHERE ac.assignment_id = a.id
+                ),
+                CASE
+                  WHEN c.id IS NOT NULL
+                    THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
+                  ELSE '[]'::json
+                END
+              ) AS classes
+       FROM assignments a
+       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN classes c ON c.id = a.class_id
+       WHERE a.id=$1`, [req.params.id]);
+        rows = result.rows;
+    }
+    catch {
+        const result = await pool_1.pool.query(`SELECT a.*,
+              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
               CASE
                 WHEN c.id IS NOT NULL
                   THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
                 ELSE '[]'::json
-              END
-            ) AS classes
-     FROM assignments a
-     JOIN subjects sub ON sub.id = a.subject_id
-     LEFT JOIN classes c ON c.id = a.class_id
-     WHERE a.id=$1`, [req.params.id]);
+              END AS classes
+       FROM assignments a
+       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN classes c ON c.id = a.class_id
+       WHERE a.id=$1`, [req.params.id]);
+        rows = result.rows;
+    }
     if (!rows[0]) {
         res.status(404).json({ error: "Topilmadi" });
         return;
