@@ -160,7 +160,8 @@ router.post("/pdf-text", (0, asyncHandler_1.ah)(async (req, res) => {
         res.status(400).json({ error: "Fayl PDF emas" });
         return;
     }
-    const { PDFParse } = await Promise.resolve().then(() => __importStar(require("pdf-parse")));
+    const pdfParseModuleName = "pdf-parse";
+    const { PDFParse } = await Promise.resolve(`${pdfParseModuleName}`).then(s => __importStar(require(s)));
     const parser = new PDFParse({ data: Buffer.from(await fileRes.arrayBuffer()) });
     const parsed = await parser.getText();
     await parser.destroy();

@@ -153,7 +153,8 @@ router.post("/pdf-text", ah(async (req, res) => {
     return;
   }
 
-  const { PDFParse } = await import("pdf-parse");
+  const pdfParseModuleName = "pdf-parse";
+  const { PDFParse } = await import(pdfParseModuleName);
   const parser = new PDFParse({ data: Buffer.from(await fileRes.arrayBuffer()) });
   const parsed = await parser.getText();
   await parser.destroy();
