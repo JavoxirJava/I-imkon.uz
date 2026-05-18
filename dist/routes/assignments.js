@@ -254,6 +254,22 @@ router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), (0, asy
     await pool_1.pool.query("DELETE FROM assignments WHERE id=$1 AND (teacher_id=$2 OR $3='super_admin')", [req.params.id, req.user.sub, req.user.role]);
     res.json({ ok: true });
 }));
+router.put("/:id/subject", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
+    const parsed = zod_1.z.object({ subject_id: zod_1.z.string().uuid() }).safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message });
+        return;
+    }
+    const { rows } = await pool_1.pool.query(`UPDATE assignments
+     SET subject_id = $1
+     WHERE id = $2 AND (teacher_id = $3 OR $4 = 'super_admin')
+     RETURNING id`, [parsed.data.subject_id, req.params.id, req.user.sub, req.user.role]);
+    if (!rows[0]) {
+        res.status(404).json({ error: "Topilmadi yoki ruxsat yo'q" });
+        return;
+    }
+    res.json({ ok: true });
+}));
 // GET /assignments/:id/submissions
 router.get("/:id/submissions", (0, role_1.requireRole)("teacher", "director", "super_admin"), (0, asyncHandler_1.ah)(async (req, res) => {
     const { rows } = await pool_1.pool.query(`SELECT asub.*, a.difficulty_level, u.first_name, u.last_name

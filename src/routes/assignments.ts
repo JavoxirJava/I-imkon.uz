@@ -305,6 +305,29 @@ router.delete("/:id", requireRole("teacher", "super_admin"), ah(async (req: Auth
   res.json({ ok: true });
 }));
 
+router.put("/:id/subject", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
+  const parsed = z.object({ subject_id: z.string().uuid() }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.errors[0]?.message });
+    return;
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE assignments
+     SET subject_id = $1
+     WHERE id = $2 AND (teacher_id = $3 OR $4 = 'super_admin')
+     RETURNING id`,
+    [parsed.data.subject_id, req.params.id, req.user!.sub, req.user!.role]
+  );
+
+  if (!rows[0]) {
+    res.status(404).json({ error: "Topilmadi yoki ruxsat yo'q" });
+    return;
+  }
+
+  res.json({ ok: true });
+}));
+
 // GET /assignments/:id/submissions
 router.get("/:id/submissions", requireRole("teacher", "director", "super_admin"), ah(async (req, res) => {
   const { rows } = await pool.query(

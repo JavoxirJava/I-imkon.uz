@@ -141,13 +141,22 @@ router.get("/:id/school-assignments", async (req, res) => {
 // GET /teachers/:id/subjects-and-classes — for content creation forms
 router.get("/:id/subjects-and-classes", async (req, res) => {
     const teacherId = req.params.id;
-    const [subjectsRes, classRes] = await Promise.all([
-        pool_1.pool.query(`SELECT id, name FROM subjects ORDER BY name`),
-        pool_1.pool.query(`SELECT DISTINCT c.id, c.grade, c.letter
+    const [schoolsRes, subjectsRes, classRes] = await Promise.all([
+        pool_1.pool.query(`SELECT DISTINCT s.id, s.name
+       FROM teacher_assignments ta
+       JOIN schools s ON s.id = ta.school_id
+       WHERE ta.teacher_id = $1
+       ORDER BY s.name`, [teacherId]),
+        pool_1.pool.query(`SELECT DISTINCT sub.id, sub.name, ta.school_id
+       FROM teacher_assignments ta
+       JOIN subjects sub ON sub.id = ta.subject_id
+       WHERE ta.teacher_id = $1
+       ORDER BY sub.name`, [teacherId]),
+        pool_1.pool.query(`SELECT DISTINCT c.id, c.grade, c.letter, c.school_id
        FROM teacher_assignments ta JOIN classes c ON c.id = ta.class_id
        WHERE ta.teacher_id = $1 ORDER BY c.grade, c.letter`, [teacherId]),
     ]);
-    res.json({ subjects: subjectsRes.rows, classes: classRes.rows });
+    res.json({ schools: schoolsRes.rows, subjects: subjectsRes.rows, classes: classRes.rows });
 });
 // GET /teachers/:id/analytics — full analytics for teacher
 router.get("/:id/analytics", async (req, res) => {
@@ -211,6 +220,85 @@ router.get("/:id/subjects", async (req, res) => {
      JOIN subjects sub ON sub.id = ta.subject_id
      WHERE ta.teacher_id = $1`, [req.params.id]);
     res.json(rows);
+});
+// POST /teachers/:id/subjects — teacher creates new "mavzu/fan" for own classes
+router.post("/:id/subjects", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+    const teacherId = req.params.id;
+    if (req.user.role !== "super_admin" && req.user.sub !== teacherId) {
+        res.status(403).json({ error: "Ruxsat yo'q" });
+        return;
+    }
+    const parsed = zod_1.z.object({
+        name: zod_1.z.string().min(2),
+        school_id: zod_1.z.string().uuid().optional(),
+        subject_id: zod_1.z.string().uuid().optional(),
+        class_ids: zod_1.z.array(zod_1.z.string().uuid()).optional(),
+    }).refine((value) => Boolean(value.school_id || value.subject_id), {
+        message: "Fan yoki maktab tanlang",
+        path: ["subject_id"],
+    }).safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.errors[0]?.message });
+        return;
+    }
+    const name = parsed.data.name.trim();
+    let schoolId = parsed.data.school_id ?? null;
+    let allowedClassIds = new Set();
+    if (parsed.data.subject_id) {
+        const { rows: teacherSubjectAssignments } = await pool_1.pool.query(`SELECT DISTINCT school_id, class_id
+       FROM teacher_assignments
+       WHERE teacher_id = $1 AND subject_id = $2`, [teacherId, parsed.data.subject_id]);
+        if (teacherSubjectAssignments.length === 0) {
+            res.status(400).json({ error: "Tanlangan fan sizga biriktirilmagan" });
+            return;
+        }
+        if (!schoolId) {
+            schoolId = teacherSubjectAssignments[0].school_id;
+        }
+        const sameSchoolAssignments = teacherSubjectAssignments.filter((row) => row.school_id === schoolId);
+        if (sameSchoolAssignments.length === 0) {
+            res.status(400).json({ error: "Tanlangan fan ushbu maktabga biriktirilmagan" });
+            return;
+        }
+        allowedClassIds = new Set(sameSchoolAssignments.map((row) => row.class_id));
+    }
+    else if (schoolId) {
+        const { rows: teacherClasses } = await pool_1.pool.query(`SELECT DISTINCT class_id
+       FROM teacher_assignments
+       WHERE teacher_id = $1 AND school_id = $2`, [teacherId, schoolId]);
+        allowedClassIds = new Set(teacherClasses.map((r) => r.class_id));
+    }
+    if (allowedClassIds.size === 0) {
+        res.status(400).json({ error: "Ushbu maktabda sizga biriktirilgan sinf topilmadi" });
+        return;
+    }
+    if (!schoolId) {
+        res.status(400).json({ error: "Maktab aniqlanmadi" });
+        return;
+    }
+    const targetClassIds = parsed.data.class_ids?.length
+        ? parsed.data.class_ids
+        : [...allowedClassIds];
+    for (const classId of targetClassIds) {
+        if (!allowedClassIds.has(classId)) {
+            res.status(400).json({ error: "Tanlangan sinflardan ba'zilari sizga biriktirilmagan" });
+            return;
+        }
+    }
+    const { rows: subjectRows } = await pool_1.pool.query(`INSERT INTO subjects (name)
+     VALUES ($1)
+     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id, name`, [name]);
+    const subjectId = subjectRows[0].id;
+    await pool_1.pool.query(`INSERT INTO school_subjects (school_id, subject_id)
+     VALUES ($1, $2)
+     ON CONFLICT (school_id, subject_id) DO NOTHING`, [schoolId, subjectId]);
+    for (const classId of targetClassIds) {
+        await pool_1.pool.query(`INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`, [teacherId, schoolId, classId, subjectId]);
+    }
+    res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length });
 });
 // DELETE /teachers/assignments/:schoolId — remove all assignments for teacher in a school
 router.delete("/assignments/:schoolId", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {

@@ -131,7 +131,7 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
   let rows: AssignmentForStudent[] = [];
   try {
     const result = await pool.query(
-      `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('name', sub.name) ELSE NULL END AS subjects
+      `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
        FROM assignments a
        LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE ${classMatchSql}
@@ -146,7 +146,7 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
   } catch {
     // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
     const result = await pool.query(
-      `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('name', sub.name) ELSE NULL END AS subjects
+      `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
        FROM assignments a
        LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE ${classMatchSql}
@@ -260,8 +260,8 @@ router.get("/me/tests", requireRole("student"), async (req: AuthRequest, res) =>
 
   const [testsRes, attemptsRes] = await Promise.all([
     pool.query(
-      `SELECT t.id, t.title, t.description, t.test_type, t.time_limit, t.max_attempts,
-              json_build_object('name', sub.name) AS subjects
+      `SELECT t.id, t.subject_id, t.title, t.description, t.test_type, t.time_limit, t.max_attempts,
+              json_build_object('id', sub.id, 'name', sub.name) AS subjects
        FROM tests t
        JOIN subjects sub ON sub.id = t.subject_id
        JOIN test_classes tc ON tc.test_id = t.id

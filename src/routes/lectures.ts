@@ -60,6 +60,7 @@ router.get("/:id", ah(async (req, res) => {
 
 // POST /lectures
 const LectureSchema = z.object({
+  school_id:     z.string().uuid().optional(),
   subject_id:    z.string().uuid(),
   class_id:      z.string().uuid().nullable().optional(),
   title:         z.string().min(1).max(500),
@@ -80,22 +81,83 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
     return;
   }
   const d = parsed.data;
+  let resolvedSchoolId: string | null = d.school_id ?? null;
 
-  // school_id from teacher assignments
-  const { rows: ta } = await pool.query(
-    "SELECT school_id FROM teacher_assignments WHERE teacher_id = $1 LIMIT 1",
-    [req.user!.sub]
-  );
-  const school_id = ta[0]?.school_id ?? null;
+  if (d.class_id) {
+    const { rows: classRow } = await pool.query(
+      `SELECT school_id
+       FROM classes
+       WHERE id = $1
+       LIMIT 1`,
+      [d.class_id]
+    );
+    if (!classRow[0]) {
+      res.status(400).json({ error: "Sinf topilmadi" });
+      return;
+    }
+    const classSchoolId = classRow[0].school_id as string;
+    if (resolvedSchoolId && classSchoolId !== resolvedSchoolId) {
+      res.status(400).json({ error: "Sinf tanlangan maktabga tegishli emas" });
+      return;
+    }
+    resolvedSchoolId = classSchoolId;
+  }
 
-  if (!school_id) {
-    logger.warn("POST /lectures: teacher has no school assignment", { user: req.user?.sub });
+  if (req.user!.role !== "super_admin") {
+    if (d.class_id) {
+      const { rows: classAccess } = await pool.query(
+        `SELECT 1
+         FROM teacher_assignments
+         WHERE teacher_id = $1 AND class_id = $2 AND subject_id = $3
+         LIMIT 1`,
+        [req.user!.sub, d.class_id, d.subject_id]
+      );
+      if (!classAccess[0]) {
+        res.status(403).json({ error: "Tanlangan sinf sizga biriktirilmagan" });
+        return;
+      }
+    } else if (resolvedSchoolId) {
+      const { rows: subjectAccess } = await pool.query(
+        `SELECT 1
+         FROM teacher_assignments
+         WHERE teacher_id = $1 AND school_id = $2 AND subject_id = $3
+         LIMIT 1`,
+        [req.user!.sub, resolvedSchoolId, d.subject_id]
+      );
+      if (!subjectAccess[0]) {
+        res.status(403).json({ error: "Tanlangan fan sizga biriktirilmagan" });
+        return;
+      }
+    } else {
+      const { rows: subjectAccess } = await pool.query(
+        `SELECT DISTINCT school_id
+         FROM teacher_assignments
+         WHERE teacher_id = $1 AND subject_id = $2
+         ORDER BY school_id
+         LIMIT 1`,
+        [req.user!.sub, d.subject_id]
+      );
+      if (!subjectAccess[0]) {
+        res.status(403).json({ error: "Tanlangan fan sizga biriktirilmagan" });
+        return;
+      }
+      resolvedSchoolId = subjectAccess[0].school_id as string;
+    }
   }
 
   const { rows } = await pool.query(
     `INSERT INTO lectures (creator_id, school_id, subject_id, class_id, title, description, content_type, file_url)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [req.user!.sub, school_id, d.subject_id, d.class_id ?? null, d.title, d.description ?? null, d.content_type, d.file_url]
+    [
+      req.user!.sub,
+      resolvedSchoolId,
+      d.subject_id,
+      d.class_id ?? null,
+      d.title,
+      d.description ?? null,
+      d.content_type,
+      d.file_url,
+    ]
   );
   const lectureId = rows[0].id;
   logger.info("POST /lectures: created", { lectureId, user: req.user?.sub });
