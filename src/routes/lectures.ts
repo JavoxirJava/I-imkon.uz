@@ -10,8 +10,19 @@ import type { AuthRequest } from "../types";
 const router = Router();
 router.use(requireAuth);
 
+async function ensureSubjectTopicLinksTable() {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS subject_topic_links (
+      topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+      fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`
+  );
+}
+
 // GET /lectures?class_id=&teacher_id=
 router.get("/", ah(async (req, res) => {
+  await ensureSubjectTopicLinksTable();
   const { class_id, teacher_id } = req.query as Record<string, string>;
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -23,6 +34,7 @@ router.get("/", ah(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT l.*,
             json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            CASE WHEN fan_sub.id IS NOT NULL THEN json_build_object('id', fan_sub.id, 'name', fan_sub.name) ELSE NULL END AS fans,
             CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'source', ls.source))
@@ -30,6 +42,8 @@ router.get("/", ah(async (req, res) => {
             ) AS lecture_subtitles
      FROM lectures l
      JOIN subjects sub ON sub.id = l.subject_id
+     LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = l.subject_id
+     LEFT JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
      LEFT JOIN classes c ON c.id = l.class_id
      ${where}
      ORDER BY l.created_at DESC`,
@@ -40,9 +54,11 @@ router.get("/", ah(async (req, res) => {
 
 // GET /lectures/:id
 router.get("/:id", ah(async (req, res) => {
+  await ensureSubjectTopicLinksTable();
   const { rows } = await pool.query(
     `SELECT l.*,
             json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            CASE WHEN fan_sub.id IS NOT NULL THEN json_build_object('id', fan_sub.id, 'name', fan_sub.name) ELSE NULL END AS fans,
             CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'language', ls.language, 'source', ls.source))
@@ -50,6 +66,8 @@ router.get("/:id", ah(async (req, res) => {
             ) AS lecture_subtitles
      FROM lectures l
      JOIN subjects sub ON sub.id = l.subject_id
+     LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = l.subject_id
+     LEFT JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
      LEFT JOIN classes c ON c.id = l.class_id
      WHERE l.id = $1`,
     [req.params.id]

@@ -42,8 +42,16 @@ const asyncHandler_1 = require("../utils/asyncHandler");
 const logger_1 = require("../utils/logger");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
+async function ensureSubjectTopicLinksTable() {
+    await pool_1.pool.query(`CREATE TABLE IF NOT EXISTS subject_topic_links (
+      topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+      fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+}
 // GET /lectures?class_id=&teacher_id=
 router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
+    await ensureSubjectTopicLinksTable();
     const { class_id, teacher_id } = req.query;
     const conditions = [];
     const params = [];
@@ -58,6 +66,7 @@ router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
     const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
     const { rows } = await pool_1.pool.query(`SELECT l.*,
             json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            CASE WHEN fan_sub.id IS NOT NULL THEN json_build_object('id', fan_sub.id, 'name', fan_sub.name) ELSE NULL END AS fans,
             CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'source', ls.source))
@@ -65,6 +74,8 @@ router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
             ) AS lecture_subtitles
      FROM lectures l
      JOIN subjects sub ON sub.id = l.subject_id
+     LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = l.subject_id
+     LEFT JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
      LEFT JOIN classes c ON c.id = l.class_id
      ${where}
      ORDER BY l.created_at DESC`, params);
@@ -72,8 +83,10 @@ router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
 }));
 // GET /lectures/:id
 router.get("/:id", (0, asyncHandler_1.ah)(async (req, res) => {
+    await ensureSubjectTopicLinksTable();
     const { rows } = await pool_1.pool.query(`SELECT l.*,
             json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+            CASE WHEN fan_sub.id IS NOT NULL THEN json_build_object('id', fan_sub.id, 'name', fan_sub.name) ELSE NULL END AS fans,
             CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'language', ls.language, 'source', ls.source))
@@ -81,6 +94,8 @@ router.get("/:id", (0, asyncHandler_1.ah)(async (req, res) => {
             ) AS lecture_subtitles
      FROM lectures l
      JOIN subjects sub ON sub.id = l.subject_id
+     LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = l.subject_id
+     LEFT JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
      LEFT JOIN classes c ON c.id = l.class_id
      WHERE l.id = $1`, [req.params.id]);
     if (!rows[0]) {

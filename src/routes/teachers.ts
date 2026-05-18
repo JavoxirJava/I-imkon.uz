@@ -9,6 +9,16 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireRole("teacher", "director", "super_admin"));
 
+async function ensureSubjectTopicLinksTable() {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS subject_topic_links (
+      topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+      fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`
+  );
+}
+
 // GET /teachers — barcha o'qituvchilar
 router.get("/", async (_req, res) => {
   const { rows } = await pool.query(
@@ -185,6 +195,7 @@ router.get("/:id/school-assignments", async (req, res) => {
 // GET /teachers/:id/subjects-and-classes — for content creation forms
 router.get("/:id/subjects-and-classes", async (req, res) => {
   const teacherId = req.params.id;
+  await ensureSubjectTopicLinksTable();
   const [schoolsRes, subjectsRes, classRes] = await Promise.all([
     pool.query(
       `SELECT DISTINCT s.id, s.name
@@ -195,9 +206,10 @@ router.get("/:id/subjects-and-classes", async (req, res) => {
       [teacherId]
     ),
     pool.query(
-      `SELECT DISTINCT sub.id, sub.name, ta.school_id
+      `SELECT DISTINCT sub.id, sub.name, ta.school_id, stl.fan_subject_id
        FROM teacher_assignments ta
        JOIN subjects sub ON sub.id = ta.subject_id
+       LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
        WHERE ta.teacher_id = $1
        ORDER BY sub.name`,
       [teacherId]
@@ -294,6 +306,7 @@ router.get("/:id/subjects", async (req, res) => {
 // POST /teachers/:id/subjects — teacher creates new "mavzu/fan" for own classes
 router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: AuthRequest, res) => {
   const teacherId = req.params.id;
+  await ensureSubjectTopicLinksTable();
   if (req.user!.role !== "super_admin" && req.user!.sub !== teacherId) {
     res.status(403).json({ error: "Ruxsat yo'q" });
     return;
@@ -394,6 +407,24 @@ router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: 
     [name]
   );
   const subjectId = subjectRows[0].id as string;
+
+  if (parsed.data.subject_id) {
+    const { rows: fanRows } = await pool.query(
+      `SELECT id FROM subjects WHERE id = $1 LIMIT 1`,
+      [parsed.data.subject_id]
+    );
+    if (!fanRows[0]) {
+      res.status(400).json({ error: "Tanlangan fan topilmadi" });
+      return;
+    }
+    await pool.query(
+      `INSERT INTO subject_topic_links (topic_subject_id, fan_subject_id)
+       VALUES ($1, $2)
+       ON CONFLICT (topic_subject_id) DO UPDATE
+       SET fan_subject_id = EXCLUDED.fan_subject_id`,
+      [subjectId, parsed.data.subject_id]
+    );
+  }
 
   await pool.query(
     `INSERT INTO school_subjects (school_id, subject_id)
