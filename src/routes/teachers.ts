@@ -303,10 +303,7 @@ router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: 
     name: z.string().min(2),
     school_id: z.string().uuid().optional(),
     subject_id: z.string().uuid().optional(),
-    class_ids: z.array(z.string().uuid()).optional(),
-  }).refine((value) => Boolean(value.school_id || value.subject_id), {
-    message: "Fan yoki maktab tanlang",
-    path: ["subject_id"],
+    class_ids: z.array(z.string().uuid()).min(1),
   }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.errors[0]?.message });
@@ -314,65 +311,79 @@ router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: 
   }
 
   const name = parsed.data.name.trim();
+  const targetClassIds = [...new Set(parsed.data.class_ids)];
   let schoolId = parsed.data.school_id ?? null;
-  let allowedClassIds = new Set<string>();
 
-  if (parsed.data.subject_id) {
-    const { rows: teacherSubjectAssignments } = await pool.query(
-      `SELECT DISTINCT school_id, class_id
+  if (req.user!.role !== "super_admin") {
+    const { rows: assignmentRows } = await pool.query(
+      `SELECT DISTINCT class_id, school_id
        FROM teacher_assignments
-       WHERE teacher_id = $1 AND subject_id = $2`,
-      [teacherId, parsed.data.subject_id]
+       WHERE teacher_id = $1 AND class_id = ANY($2::uuid[])`,
+      [teacherId, targetClassIds]
     );
 
-    if (teacherSubjectAssignments.length === 0) {
-      res.status(400).json({ error: "Tanlangan fan sizga biriktirilmagan" });
+    const allowedClassIds = new Set(
+      assignmentRows.map((row: { class_id: string }) => row.class_id)
+    );
+    for (const classId of targetClassIds) {
+      if (!allowedClassIds.has(classId)) {
+        res.status(400).json({ error: "Tanlangan sinflardan ba'zilari sizga biriktirilmagan" });
+        return;
+      }
+    }
+
+    const classSchoolIds = [...new Set(
+      assignmentRows.map((row: { school_id: string }) => row.school_id)
+    )];
+    if (classSchoolIds.length === 0) {
+      res.status(400).json({ error: "Tanlangan sinflar uchun biriktirish topilmadi" });
       return;
     }
-
-    if (!schoolId) {
-      schoolId = teacherSubjectAssignments[0].school_id as string;
-    }
-
-    const sameSchoolAssignments = teacherSubjectAssignments.filter(
-      (row: { school_id: string }) => row.school_id === schoolId
-    );
-    if (sameSchoolAssignments.length === 0) {
-      res.status(400).json({ error: "Tanlangan fan ushbu maktabga biriktirilmagan" });
+    if (schoolId) {
+      if (!classSchoolIds.includes(schoolId)) {
+        res.status(400).json({ error: "Tanlangan sinflar tanlangan maktabga tegishli emas" });
+        return;
+      }
+    } else if (classSchoolIds.length === 1) {
+      schoolId = classSchoolIds[0];
+    } else {
+      res.status(400).json({ error: "Sinf(lar) turli maktablarga tegishli, maktabni aniqlab bo'lmadi" });
       return;
     }
+  } else {
+    const { rows: classRows } = await pool.query(
+      `SELECT id, school_id
+       FROM classes
+       WHERE id = ANY($1::uuid[])`,
+      [targetClassIds]
+    );
+    const classIdSet = new Set(classRows.map((row: { id: string }) => row.id));
+    for (const classId of targetClassIds) {
+      if (!classIdSet.has(classId)) {
+        res.status(400).json({ error: "Tanlangan sinflardan ba'zilari topilmadi" });
+        return;
+      }
+    }
 
-    allowedClassIds = new Set(
-      sameSchoolAssignments.map((row: { class_id: string }) => row.class_id)
-    );
-  } else if (schoolId) {
-    const { rows: teacherClasses } = await pool.query(
-      `SELECT DISTINCT class_id
-       FROM teacher_assignments
-       WHERE teacher_id = $1 AND school_id = $2`,
-      [teacherId, schoolId]
-    );
-    allowedClassIds = new Set(teacherClasses.map((r: { class_id: string }) => r.class_id));
+    const classSchoolIds = [...new Set(
+      classRows.map((row: { school_id: string }) => row.school_id)
+    )];
+    if (schoolId) {
+      if (!classSchoolIds.includes(schoolId)) {
+        res.status(400).json({ error: "Tanlangan sinflar tanlangan maktabga tegishli emas" });
+        return;
+      }
+    } else if (classSchoolIds.length === 1) {
+      schoolId = classSchoolIds[0];
+    } else {
+      res.status(400).json({ error: "Sinf(lar) turli maktablarga tegishli, maktabni aniqlab bo'lmadi" });
+      return;
+    }
   }
 
-  if (allowedClassIds.size === 0) {
-    res.status(400).json({ error: "Ushbu maktabda sizga biriktirilgan sinf topilmadi" });
-    return;
-  }
   if (!schoolId) {
     res.status(400).json({ error: "Maktab aniqlanmadi" });
     return;
-  }
-
-  const targetClassIds = parsed.data.class_ids?.length
-    ? parsed.data.class_ids
-    : [...allowedClassIds];
-
-  for (const classId of targetClassIds) {
-    if (!allowedClassIds.has(classId)) {
-      res.status(400).json({ error: "Tanlangan sinflardan ba'zilari sizga biriktirilmagan" });
-      return;
-    }
   }
 
   const { rows: subjectRows } = await pool.query(
