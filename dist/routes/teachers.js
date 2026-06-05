@@ -8,12 +8,17 @@ const role_1 = require("../middleware/role");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
 router.use((0, role_1.requireRole)("teacher", "director", "super_admin"));
+// Jadval mavjudligini process davomida bir marta tekshiramiz.
+let subjectTopicLinksEnsured = false;
 async function ensureSubjectTopicLinksTable() {
+    if (subjectTopicLinksEnsured)
+        return;
     await pool_1.pool.query(`CREATE TABLE IF NOT EXISTS subject_topic_links (
       topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
       fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+    subjectTopicLinksEnsured = true;
 }
 // GET /teachers — barcha o'qituvchilar
 router.get("/", async (_req, res) => {
@@ -35,18 +40,20 @@ router.get("/", async (_req, res) => {
 router.get("/:id/students", async (req, res) => {
     const teacherId = req.params.id;
     const { subject_id } = req.query;
-    const { rows: classIds } = await pool_1.pool.query(`SELECT DISTINCT class_id FROM teacher_assignments WHERE teacher_id = $1 ${subject_id ? "AND subject_id = $2" : ""}`, subject_id ? [teacherId, subject_id] : [teacherId]);
+    const params = subject_id ? [teacherId, subject_id] : [teacherId];
+    const subjectFilter = subject_id ? "AND subject_id = $2" : "";
+    // Sinflar va testlar bir-biriga bog'liq emas — parallel olamiz.
+    const [classRes, testRes] = await Promise.all([
+        pool_1.pool.query(`SELECT DISTINCT class_id FROM teacher_assignments WHERE teacher_id = $1 ${subjectFilter}`, params),
+        pool_1.pool.query(`SELECT id FROM tests WHERE teacher_id = $1 ${subjectFilter}`, params),
+    ]);
+    const classIds = classRes.rows;
     if (classIds.length === 0) {
         res.json([]);
         return;
     }
     const ids = classIds.map((r) => r.class_id);
-    // Test IDs for this teacher + subject
-    const testQuery = subject_id
-        ? "SELECT id FROM tests WHERE teacher_id = $1 AND subject_id = $2"
-        : "SELECT id FROM tests WHERE teacher_id = $1";
-    const { rows: testRows } = await pool_1.pool.query(testQuery, subject_id ? [teacherId, subject_id] : [teacherId]);
-    const testIds = testRows.map((t) => t.id);
+    const testIds = testRes.rows.map((t) => t.id);
     const { rows: students } = await pool_1.pool.query(`SELECT u.id, u.first_name, u.last_name, u.status,
             sp.class_id, sp.approved_at,
             ap.contrast_mode, ap.color_blind_mode
@@ -330,11 +337,9 @@ router.post("/:id/subjects", (0, role_1.requireRole)("teacher", "super_admin"), 
     await pool_1.pool.query(`INSERT INTO school_subjects (school_id, subject_id)
      VALUES ($1, $2)
      ON CONFLICT (school_id, subject_id) DO NOTHING`, [schoolId, subjectId]);
-    for (const classId of targetClassIds) {
-        await pool_1.pool.query(`INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`, [teacherId, schoolId, classId, subjectId]);
-    }
+    await pool_1.pool.query(`INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
+     SELECT $1, $2, unnest($3::uuid[]), $4
+     ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`, [teacherId, schoolId, targetClassIds, subjectId]);
     res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length });
 });
 // DELETE /teachers/assignments/:schoolId — remove all assignments for teacher in a school
@@ -353,10 +358,10 @@ router.post("/assignments", (0, role_1.requireRole)("teacher", "super_admin"), a
         res.status(400).json({ error: parsed.error.errors[0]?.message });
         return;
     }
-    for (const class_id of parsed.data.class_ids) {
-        await pool_1.pool.query(`INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
-       VALUES ($1,$2,$3,$4) ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`, [req.user.sub, parsed.data.school_id, class_id, parsed.data.subject_id ?? "00000000-0000-0000-0000-000000000000"]);
-    }
+    await pool_1.pool.query(`INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
+     SELECT $1, $2, unnest($3::uuid[]), $4
+     ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`, [req.user.sub, parsed.data.school_id, parsed.data.class_ids,
+        parsed.data.subject_id ?? "00000000-0000-0000-0000-000000000000"]);
     res.status(201).json({ ok: true });
 });
 exports.default = router;

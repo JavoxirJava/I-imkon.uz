@@ -28,8 +28,11 @@ const app = (0, express_1.default)();
 app.use((0, helmet_1.default)());
 app.use((0, cors_1.default)({ origin: true, credentials: true }));
 app.use(express_1.default.json({ limit: "2mb" }));
+// So'rov bodysini global ravishda log qilmaymiz — u parol/token kabi maxfiy
+// ma'lumotlarni ochiq matnda yozib qo'yishi va katta payload'larda ortiqcha
+// yuk berishi mumkin. Kerakli route'lar o'zi xavfsiz tarzda log qiladi.
 app.use((req, _res, next) => {
-    logger_1.logger.info(`${req.method} ${req.path}`, { ip: req.ip, body: req.method !== "GET" ? req.body : undefined });
+    logger_1.logger.info(`${req.method} ${req.path}`, { ip: req.ip });
     next();
 });
 app.get("/health", (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));

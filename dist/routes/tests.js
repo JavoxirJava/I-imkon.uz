@@ -10,6 +10,23 @@ const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
 const role_1 = require("../middleware/role");
 const testExcel_1 = require("../utils/testExcel");
+/** Bir nechta yozuvni atomar bajarish uchun tranzaksiya yordamchisi. */
+async function withTransaction(fn) {
+    const client = await pool_1.pool.connect();
+    try {
+        await client.query("BEGIN");
+        const result = await fn(client);
+        await client.query("COMMIT");
+        return result;
+    }
+    catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+    }
+    finally {
+        client.release();
+    }
+}
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
@@ -85,7 +102,7 @@ router.get("/template", (0, role_1.requireRole)("teacher", "super_admin"), async
     res.send(template);
 });
 // POST /tests/import — Excel dan test yuklash
-router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload.single("file"), async (req, res) => {
+router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload.single("file"), async (req, res, next) => {
     if (!req.file) {
         res.status(400).json({ error: "Fayl kerak" });
         return;
@@ -103,13 +120,28 @@ router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload
         res.status(400).json({ error: "subject_id kerak" });
         return;
     }
-    const classIds = class_ids ? JSON.parse(class_ids) : [];
-    const { rows } = await pool_1.pool.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, subject_id, parsed.title, parsed.description,
-        parsed.time_limit, parsed.test_type, parsed.max_attempts]);
-    const testId = rows[0].id;
-    await upsertTestData(pool_1.pool, testId, { ...parsed, subject_id, class_ids: classIds, game_ids: [] });
-    res.status(201).json({ id: testId, question_count: parsed.questions.length });
+    let classIds = [];
+    try {
+        classIds = class_ids ? JSON.parse(class_ids) : [];
+    }
+    catch {
+        res.status(400).json({ error: "class_ids noto'g'ri formatda" });
+        return;
+    }
+    try {
+        const testId = await withTransaction(async (client) => {
+            const { rows } = await client.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, subject_id, parsed.title, parsed.description,
+                parsed.time_limit, parsed.test_type, parsed.max_attempts]);
+            const id = rows[0].id;
+            await upsertTestData(client, id, { ...parsed, subject_id, class_ids: classIds, game_ids: [] });
+            return id;
+        });
+        res.status(201).json({ id: testId, question_count: parsed.questions.length });
+    }
+    catch (err) {
+        next(err);
+    }
 });
 // GET /tests/:id (with questions + options)
 router.get("/:id", async (req, res) => {
@@ -187,32 +219,47 @@ async function upsertTestData(client, testId, input) {
     }
 }
 // POST /tests
-router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res, next) => {
     const parsed = TestSchema.safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: parsed.error.errors[0]?.message });
         return;
     }
-    const { rows } = await pool_1.pool.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
-        parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null]);
-    const testId = rows[0].id;
-    await upsertTestData(pool_1.pool, testId, parsed.data);
-    res.status(201).json({ id: testId });
+    try {
+        const testId = await withTransaction(async (client) => {
+            const { rows } = await client.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
+                parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null]);
+            const id = rows[0].id;
+            await upsertTestData(client, id, parsed.data);
+            return id;
+        });
+        res.status(201).json({ id: testId });
+    }
+    catch (err) {
+        next(err);
+    }
 });
 // PUT /tests/:id
-router.put("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
+router.put("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res, next) => {
     const parsed = TestSchema.safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: parsed.error.errors[0]?.message });
         return;
     }
-    await pool_1.pool.query(`UPDATE tests SET subject_id=$1, title=$2, description=$3, time_limit=$4, test_type=$5, max_attempts=$6
-     WHERE id=$7 AND (teacher_id=$8 OR $9='super_admin')`, [parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
-        parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null,
-        req.params.id, req.user.sub, req.user.role]);
-    await upsertTestData(pool_1.pool, req.params.id, parsed.data);
-    res.json({ ok: true });
+    try {
+        await withTransaction(async (client) => {
+            await client.query(`UPDATE tests SET subject_id=$1, title=$2, description=$3, time_limit=$4, test_type=$5, max_attempts=$6
+         WHERE id=$7 AND (teacher_id=$8 OR $9='super_admin')`, [parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
+                parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null,
+                req.params.id, req.user.sub, req.user.role]);
+            await upsertTestData(client, req.params.id, parsed.data);
+        });
+        res.json({ ok: true });
+    }
+    catch (err) {
+        next(err);
+    }
 });
 // GET /tests/:id/export — Excel yuklab olish
 router.get("/:id/export", (0, role_1.requireRole)("teacher", "director", "super_admin"), async (req, res) => {

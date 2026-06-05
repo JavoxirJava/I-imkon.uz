@@ -11,6 +11,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TYPE user_role AS ENUM ('super_admin', 'director', 'teacher', 'student', 'parent');
 CREATE TYPE user_status AS ENUM ('pending', 'active', 'rejected');
+CREATE TYPE difficulty_level AS ENUM ('low', 'medium', 'high');
 CREATE TYPE content_type AS ENUM ('pdf', 'video', 'audio', 'ppt');
 CREATE TYPE subtitle_source AS ENUM ('manual', 'ai');
 CREATE TYPE test_type AS ENUM ('entry', 'post_topic', 'home_study');
@@ -116,6 +117,7 @@ CREATE TABLE student_profiles (
   is_disabled      BOOLEAN NOT NULL DEFAULT FALSE,
   approved_by      UUID REFERENCES users(id) ON DELETE SET NULL,
   approved_at      TIMESTAMPTZ,
+  rejected_at      TIMESTAMPTZ,
   rejection_reason TEXT
 );
 
@@ -199,6 +201,8 @@ CREATE TABLE assignments (
   link        TEXT,
   deadline    TIMESTAMPTZ,
   max_score   SMALLINT NOT NULL DEFAULT 100 CHECK (max_score > 0),
+  difficulty_level difficulty_level NOT NULL DEFAULT 'medium',
+  is_for_disabled  BOOLEAN NOT NULL DEFAULT FALSE,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -417,3 +421,20 @@ CREATE TABLE notifications (
 
 CREATE INDEX idx_notifications_user ON notifications(user_id);
 CREATE INDEX idx_notifications_read ON notifications(user_id, read);
+
+-- =============================================================
+-- 14. QO'SHIMCHA INDEKSLAR (tez-tez filtrlanadigan FK ustunlari)
+-- =============================================================
+-- Bu ustunlar JOIN/WHERE'da ishlatiladi, lekin mavjud kalit/indekslar
+-- (kompozit PK'larning yetakchi ustuni) ularni qoplamaydi.
+
+-- assignment_submissions: WHERE student_id (o'quvchi natijalari/topshiriqlari)
+CREATE INDEX IF NOT EXISTS idx_asub_student ON assignment_submissions(student_id);
+
+-- junction jadvallar: class_id bo'yicha filtr (PK yetakchisi book_id/game_id/test_id)
+CREATE INDEX IF NOT EXISTS idx_book_classes_class ON book_classes(class_id);
+CREATE INDEX IF NOT EXISTS idx_game_classes_class ON game_classes(class_id);
+CREATE INDEX IF NOT EXISTS idx_test_classes_class ON test_classes(class_id);
+
+-- chat: xona bo'yicha so'nggi xabar / o'qilmaganlar sonini tezlatadi
+CREATE INDEX IF NOT EXISTS idx_chat_messages_room_created ON chat_messages(room_id, created_at DESC);

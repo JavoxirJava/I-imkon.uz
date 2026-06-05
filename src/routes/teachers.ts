@@ -9,7 +9,10 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireRole("teacher", "director", "super_admin"));
 
+// Jadval mavjudligini process davomida bir marta tekshiramiz.
+let subjectTopicLinksEnsured = false;
 async function ensureSubjectTopicLinksTable() {
+  if (subjectTopicLinksEnsured) return;
   await pool.query(
     `CREATE TABLE IF NOT EXISTS subject_topic_links (
       topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
@@ -17,6 +20,7 @@ async function ensureSubjectTopicLinksTable() {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`
   );
+  subjectTopicLinksEnsured = true;
 }
 
 // GET /teachers — barcha o'qituvchilar
@@ -42,25 +46,29 @@ router.get("/", async (_req, res) => {
 router.get("/:id/students", async (req: AuthRequest, res) => {
   const teacherId = req.params.id;
   const { subject_id } = req.query as { subject_id?: string };
+  const params = subject_id ? [teacherId, subject_id] : [teacherId];
+  const subjectFilter = subject_id ? "AND subject_id = $2" : "";
 
-  const { rows: classIds } = await pool.query(
-    `SELECT DISTINCT class_id FROM teacher_assignments WHERE teacher_id = $1 ${subject_id ? "AND subject_id = $2" : ""}`,
-    subject_id ? [teacherId, subject_id] : [teacherId]
-  );
+  // Sinflar va testlar bir-biriga bog'liq emas — parallel olamiz.
+  const [classRes, testRes] = await Promise.all([
+    pool.query(
+      `SELECT DISTINCT class_id FROM teacher_assignments WHERE teacher_id = $1 ${subjectFilter}`,
+      params
+    ),
+    pool.query(
+      `SELECT id FROM tests WHERE teacher_id = $1 ${subjectFilter}`,
+      params
+    ),
+  ]);
 
+  const classIds = classRes.rows;
   if (classIds.length === 0) {
     res.json([]);
     return;
   }
 
   const ids = classIds.map((r) => r.class_id);
-
-  // Test IDs for this teacher + subject
-  const testQuery = subject_id
-    ? "SELECT id FROM tests WHERE teacher_id = $1 AND subject_id = $2"
-    : "SELECT id FROM tests WHERE teacher_id = $1";
-  const { rows: testRows } = await pool.query(testQuery, subject_id ? [teacherId, subject_id] : [teacherId]);
-  const testIds = testRows.map((t) => t.id);
+  const testIds = testRes.rows.map((t) => t.id);
 
   const { rows: students } = await pool.query(
     `SELECT u.id, u.first_name, u.last_name, u.status,
@@ -433,14 +441,12 @@ router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: 
     [schoolId, subjectId]
   );
 
-  for (const classId of targetClassIds) {
-    await pool.query(
-      `INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`,
-      [teacherId, schoolId, classId, subjectId]
-    );
-  }
+  await pool.query(
+    `INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
+     SELECT $1, $2, unnest($3::uuid[]), $4
+     ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`,
+    [teacherId, schoolId, targetClassIds, subjectId]
+  );
 
   res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length });
 });
@@ -463,13 +469,13 @@ router.post("/assignments", requireRole("teacher", "super_admin"), async (req: A
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.errors[0]?.message }); return; }
 
-  for (const class_id of parsed.data.class_ids) {
-    await pool.query(
-      `INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
-       VALUES ($1,$2,$3,$4) ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`,
-      [req.user!.sub, parsed.data.school_id, class_id, parsed.data.subject_id ?? "00000000-0000-0000-0000-000000000000"]
-    );
-  }
+  await pool.query(
+    `INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
+     SELECT $1, $2, unnest($3::uuid[]), $4
+     ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`,
+    [req.user!.sub, parsed.data.school_id, parsed.data.class_ids,
+     parsed.data.subject_id ?? "00000000-0000-0000-0000-000000000000"]
+  );
   res.status(201).json({ ok: true });
 });
 

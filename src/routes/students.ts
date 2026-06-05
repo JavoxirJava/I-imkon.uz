@@ -4,7 +4,6 @@ import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/role";
 import type { AuthRequest } from "../types";
 import { ah } from "../utils/asyncHandler";
-import { logger } from "../utils/logger";
 
 import { z } from "zod";
 
@@ -23,6 +22,18 @@ function canSeeHigherLevel(baseLevel: DifficultyLevel, pendingLevels: Set<Diffic
   if (baseLevel === "medium" && pendingLevels.has("medium")) return "high";
   if (baseLevel === "low" && pendingLevels.has("medium")) return "high";
   return baseLevel;
+}
+
+// `assignment_classes` jadvali mavjudligini keshlaymiz: jadval bir marta
+// yaratilgandan keyin yo'qolmaydi, shuning uchun har so'rovda tekshirish shart emas.
+let assignmentClassesTableExists = false;
+async function hasAssignmentClassesTable(): Promise<boolean> {
+  if (assignmentClassesTableExists) return true;
+  const regRes = await pool.query(
+    `SELECT to_regclass('public.assignment_classes') IS NOT NULL AS exists`
+  );
+  assignmentClassesTableExists = Boolean(regRes.rows[0]?.exists);
+  return assignmentClassesTableExists;
 }
 
 // GET /students/me — o'z profili
@@ -120,55 +131,57 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
       ? ["low", "medium"]
       : ["low"];
 
-  const regRes = await pool.query(
-    `SELECT to_regclass('public.assignment_classes') IS NOT NULL AS has_assignment_classes`
-  );
-  const hasAssignmentClasses = Boolean(regRes.rows[0]?.has_assignment_classes);
+  const hasAssignmentClasses = await hasAssignmentClassesTable();
   const classMatchSql = hasAssignmentClasses
     ? `(a.class_id = $1 OR EXISTS (SELECT 1 FROM assignment_classes ac WHERE ac.assignment_id = a.id AND ac.class_id = $1))`
     : `a.class_id = $1`;
 
-  let rows: AssignmentForStudent[] = [];
-  try {
-    const result = await pool.query(
-      `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
-       FROM assignments a
-       LEFT JOIN subjects sub ON sub.id = a.subject_id
-       WHERE ${classMatchSql}
-         AND (
-           COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
-           OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)
-         )
-       ORDER BY a.created_at DESC`,
-      [profile.class_id, visibleLevels, Boolean(profile.is_disabled)]
-    );
-    rows = result.rows as AssignmentForStudent[];
-  } catch {
-    // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
-    const result = await pool.query(
-      `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
-       FROM assignments a
-       LEFT JOIN subjects sub ON sub.id = a.subject_id
-       WHERE ${classMatchSql}
-       ORDER BY a.created_at DESC`,
-      [profile.class_id]
-    );
-    rows = result.rows as AssignmentForStudent[];
+  // Topshiriqlar va o'quvchining submission'lari bir-biriga bog'liq emas — parallel olamiz.
+  async function loadAssignments(): Promise<AssignmentForStudent[]> {
+    try {
+      const result = await pool.query(
+        `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
+         FROM assignments a
+         LEFT JOIN subjects sub ON sub.id = a.subject_id
+         WHERE ${classMatchSql}
+           AND (
+             COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
+             OR (COALESCE(a.is_for_disabled, FALSE) = TRUE AND $3 = TRUE)
+           )
+         ORDER BY a.created_at DESC`,
+        [profile.class_id, visibleLevels, Boolean(profile.is_disabled)]
+      );
+      return result.rows as AssignmentForStudent[];
+    } catch {
+      // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
+      const result = await pool.query(
+        `SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
+         FROM assignments a
+         LEFT JOIN subjects sub ON sub.id = a.subject_id
+         WHERE ${classMatchSql}
+         ORDER BY a.created_at DESC`,
+        [profile.class_id]
+      );
+      return result.rows as AssignmentForStudent[];
+    }
   }
 
-  let studentSubmissions;
-  try {
-    studentSubmissions = await pool.query(
-      `SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`,
-      [studentId]
-    );
-  } catch {
-    // Legacy schema fallback: progress_state yo'q bo'lsa assignment_id ni olib, holatni null deb qo'yamiz
-    studentSubmissions = await pool.query(
-      `SELECT assignment_id, NULL::text AS progress_state FROM assignment_submissions WHERE student_id=$1`,
-      [studentId]
-    );
+  async function loadSubmissions() {
+    try {
+      return await pool.query(
+        `SELECT assignment_id, progress_state FROM assignment_submissions WHERE student_id=$1`,
+        [studentId]
+      );
+    } catch {
+      // Legacy schema fallback: progress_state yo'q bo'lsa assignment_id ni olib, holatni null deb qo'yamiz
+      return await pool.query(
+        `SELECT assignment_id, NULL::text AS progress_state FROM assignment_submissions WHERE student_id=$1`,
+        [studentId]
+      );
+    }
   }
+
+  const [rows, studentSubmissions] = await Promise.all([loadAssignments(), loadSubmissions()]);
   const progressByAssignment = new Map<string, string | null>();
   for (const row of studentSubmissions.rows as Array<{ assignment_id: string; progress_state: string | null }>) {
     progressByAssignment.set(row.assignment_id, row.progress_state);
@@ -183,16 +196,6 @@ router.get("/me/assignments", requireRole("student"), ah(async (req: AuthRequest
     !enriched.some((a) =>
       a.difficulty_level === "high" && a.my_progress_state !== "done_approved"
     );
-
-  logger.info("GET /students/me/assignments result", {
-    studentId,
-    classId: profile.class_id,
-    baseLevel,
-    visibleLevel,
-    hasAssignmentClasses,
-    count: enriched.length,
-    assignmentIds: enriched.map((a) => a.id).slice(0, 20),
-  });
 
   res.json({
     assignments: enriched,

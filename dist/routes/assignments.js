@@ -42,6 +42,19 @@ async function applyLevelDelta(studentId, delta) {
     }
     await pool_1.pool.query("UPDATE student_profiles SET level_progress_score=$1 WHERE user_id=$2", [nextScore, studentId]);
 }
+// `link` ustuni eski bazalarda bo'lmasligi mumkin — bir marta idempotent qo'shamiz.
+let assignmentLinkColumnEnsured = false;
+async function ensureAssignmentLinkColumn() {
+    if (assignmentLinkColumnEnsured)
+        return;
+    try {
+        await pool_1.pool.query("ALTER TABLE assignments ADD COLUMN IF NOT EXISTS link TEXT");
+        assignmentLinkColumnEnsured = true;
+    }
+    catch (err) {
+        logger_1.logger.warn("ensureAssignmentLinkColumn failed", { err });
+    }
+}
 router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {
     const { teacher_id, class_id } = req.query;
     if (teacher_id) {
@@ -192,6 +205,7 @@ const AssignmentSchema = zod_1.z.object({
     deadline: zod_1.z.string().nullable().optional(),
     max_score: zod_1.z.number().int().positive().default(100),
     file_url: zod_1.z.string().url().nullable().optional(),
+    link: zod_1.z.string().url().nullable().optional(),
     difficulty_level: zod_1.z.enum(["low", "medium", "high"]).default("medium"),
     is_for_disabled: zod_1.z.boolean().default(false),
 });
@@ -204,19 +218,18 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHan
         return;
     }
     const d = parsed.data;
+    await ensureAssignmentLinkColumn();
     const uniqueClassIds = [...new Set(d.class_ids)];
     const primaryClassId = uniqueClassIds[0];
-    const { rows } = await pool_1.pool.query(`INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, difficulty_level, is_for_disabled)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [req.user.sub, d.subject_id, primaryClassId, d.title, d.description ?? null,
-        d.deadline ?? null, d.max_score, d.file_url ?? null, d.difficulty_level, d.is_for_disabled]);
+    const { rows } = await pool_1.pool.query(`INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, link, difficulty_level, is_for_disabled)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, [req.user.sub, d.subject_id, primaryClassId, d.title, d.description ?? null,
+        d.deadline ?? null, d.max_score, d.file_url ?? null, d.link ?? null, d.difficulty_level, d.is_for_disabled]);
     const assignmentId = rows[0].id;
     let multiClassMappingSaved = false;
     try {
-        for (const classId of uniqueClassIds) {
-            await pool_1.pool.query(`INSERT INTO assignment_classes (assignment_id, class_id)
-         VALUES ($1,$2)
-         ON CONFLICT (assignment_id, class_id) DO NOTHING`, [assignmentId, classId]);
-        }
+        await pool_1.pool.query(`INSERT INTO assignment_classes (assignment_id, class_id)
+       SELECT $1, unnest($2::uuid[])
+       ON CONFLICT (assignment_id, class_id) DO NOTHING`, [assignmentId, uniqueClassIds]);
         multiClassMappingSaved = true;
     }
     catch {
@@ -229,11 +242,9 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHan
           PRIMARY KEY (assignment_id, class_id)
         )
       `);
-            for (const classId of uniqueClassIds) {
-                await pool_1.pool.query(`INSERT INTO assignment_classes (assignment_id, class_id)
-           VALUES ($1,$2)
-           ON CONFLICT (assignment_id, class_id) DO NOTHING`, [assignmentId, classId]);
-            }
+            await pool_1.pool.query(`INSERT INTO assignment_classes (assignment_id, class_id)
+         SELECT $1, unnest($2::uuid[])
+         ON CONFLICT (assignment_id, class_id) DO NOTHING`, [assignmentId, uniqueClassIds]);
             multiClassMappingSaved = true;
         }
         catch {

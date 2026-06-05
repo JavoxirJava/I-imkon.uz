@@ -42,12 +42,18 @@ const asyncHandler_1 = require("../utils/asyncHandler");
 const logger_1 = require("../utils/logger");
 const router = (0, express_1.Router)();
 router.use(auth_1.requireAuth);
+// `subject_topic_links` jadvali bir marta (process boshida) tekshiriladi —
+// har bir so'rovda CREATE TABLE IF NOT EXISTS ishlatish keraksiz DB yuk.
+let subjectTopicLinksEnsured = false;
 async function ensureSubjectTopicLinksTable() {
+    if (subjectTopicLinksEnsured)
+        return;
     await pool_1.pool.query(`CREATE TABLE IF NOT EXISTS subject_topic_links (
       topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
       fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+    subjectTopicLinksEnsured = true;
 }
 // GET /lectures?class_id=&teacher_id=
 router.get("/", (0, asyncHandler_1.ah)(async (req, res) => {

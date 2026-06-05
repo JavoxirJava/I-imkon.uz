@@ -268,14 +268,12 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
 
   let multiClassMappingSaved = false;
   try {
-    for (const classId of uniqueClassIds) {
-      await pool.query(
-        `INSERT INTO assignment_classes (assignment_id, class_id)
-         VALUES ($1,$2)
-         ON CONFLICT (assignment_id, class_id) DO NOTHING`,
-        [assignmentId, classId]
-      );
-    }
+    await pool.query(
+      `INSERT INTO assignment_classes (assignment_id, class_id)
+       SELECT $1, unnest($2::uuid[])
+       ON CONFLICT (assignment_id, class_id) DO NOTHING`,
+      [assignmentId, uniqueClassIds]
+    );
     multiClassMappingSaved = true;
   } catch {
     // Jadval yo'q bo'lsa bir marta yaratib, class mapping'ni qayta yozamiz.
@@ -287,14 +285,12 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
           PRIMARY KEY (assignment_id, class_id)
         )
       `);
-      for (const classId of uniqueClassIds) {
-        await pool.query(
-          `INSERT INTO assignment_classes (assignment_id, class_id)
-           VALUES ($1,$2)
-           ON CONFLICT (assignment_id, class_id) DO NOTHING`,
-          [assignmentId, classId]
-        );
-      }
+      await pool.query(
+        `INSERT INTO assignment_classes (assignment_id, class_id)
+         SELECT $1, unnest($2::uuid[])
+         ON CONFLICT (assignment_id, class_id) DO NOTHING`,
+        [assignmentId, uniqueClassIds]
+      );
       multiClassMappingSaved = true;
     } catch {
       // Agar yaratish huquqi bo'lmasa, legacy class_id bilan ishlashda davom etadi.

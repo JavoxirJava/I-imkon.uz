@@ -10,7 +10,11 @@ import type { AuthRequest } from "../types";
 const router = Router();
 router.use(requireAuth);
 
+// `subject_topic_links` jadvali bir marta (process boshida) tekshiriladi —
+// har bir so'rovda CREATE TABLE IF NOT EXISTS ishlatish keraksiz DB yuk.
+let subjectTopicLinksEnsured = false;
 async function ensureSubjectTopicLinksTable() {
+  if (subjectTopicLinksEnsured) return;
   await pool.query(
     `CREATE TABLE IF NOT EXISTS subject_topic_links (
       topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
@@ -18,6 +22,7 @@ async function ensureSubjectTopicLinksTable() {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`
   );
+  subjectTopicLinksEnsured = true;
 }
 
 // GET /lectures?class_id=&teacher_id=

@@ -27,8 +27,11 @@ app.use(helmet());
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "2mb" }));
 
+// So'rov bodysini global ravishda log qilmaymiz — u parol/token kabi maxfiy
+// ma'lumotlarni ochiq matnda yozib qo'yishi va katta payload'larda ortiqcha
+// yuk berishi mumkin. Kerakli route'lar o'zi xavfsiz tarzda log qiladi.
 app.use((req, _res, next) => {
-  logger.info(`${req.method} ${req.path}`, { ip: req.ip, body: req.method !== "GET" ? req.body : undefined });
+  logger.info(`${req.method} ${req.path}`, { ip: req.ip });
   next();
 });
 
