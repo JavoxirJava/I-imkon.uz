@@ -1,36 +1,49 @@
 import type { Request } from "express";
 
-type Level = "info" | "warn" | "error";
+type Meta = Record<string, unknown>;
 
-function fmt(level: Level, msg: string, meta?: Record<string, unknown>): string {
-  const ts = new Date().toISOString();
-  const base = `[${ts}] [${level.toUpperCase()}] ${msg}`;
-  return meta ? `${base} ${JSON.stringify(meta)}` : base;
+function timestamp(): string {
+  return new Date().toISOString();
 }
 
+function formatMeta(meta?: Meta): string {
+  if (!meta || Object.keys(meta).length === 0) return "";
+  try {
+    return " " + JSON.stringify(meta);
+  } catch {
+    return " [meta serialize qilib bo'lmadi]";
+  }
+}
+
+/**
+ * Oddiy, bog'liqliksiz strukturali logger. Console'ga yozadi.
+ * Ishlatilishi:
+ *   logger.info("xabar", { meta })
+ *   logger.warn("xabar", { meta })
+ *   logger.error("xabar", err, { meta })
+ *   logger.req(req, "xabar", { meta })
+ */
 export const logger = {
-  info(msg: string, meta?: Record<string, unknown>) {
-    console.log(fmt("info", msg, meta));
+  info(message: string, meta?: Meta): void {
+    console.log(`[${timestamp()}] INFO  ${message}${formatMeta(meta)}`);
   },
-  warn(msg: string, meta?: Record<string, unknown>) {
-    console.warn(fmt("warn", msg, meta));
+
+  warn(message: string, meta?: Meta): void {
+    console.warn(`[${timestamp()}] WARN  ${message}${formatMeta(meta)}`);
   },
-  error(msg: string, err?: unknown, meta?: Record<string, unknown>) {
-    const errMeta: Record<string, unknown> = { ...meta };
-    if (err instanceof Error) {
-      errMeta.error = err.message;
-      errMeta.stack = err.stack;
-    } else if (err !== undefined) {
-      errMeta.error = String(err);
+
+  error(message: string, error?: unknown, meta?: Meta): void {
+    let errorPart = "";
+    if (error instanceof Error) {
+      errorPart = ` ${error.stack ?? error.message}`;
+    } else if (error !== undefined) {
+      errorPart = ` ${String(error)}`;
     }
-    console.error(fmt("error", msg, errMeta));
+    console.error(`[${timestamp()}] ERROR ${message}${errorPart}${formatMeta(meta)}`);
   },
-  req(req: Request, msg: string, meta?: Record<string, unknown>) {
-    logger.info(msg, {
-      method: req.method,
-      path: req.path,
-      ip: req.ip,
-      ...meta,
-    });
+
+  req(req: Pick<Request, "method" | "originalUrl" | "path">, message: string, meta?: Meta): void {
+    const where = `${req.method ?? ""} ${req.originalUrl ?? req.path ?? ""}`.trim();
+    console.log(`[${timestamp()}] REQ   ${message}${where ? ` (${where})` : ""}${formatMeta(meta)}`);
   },
 };

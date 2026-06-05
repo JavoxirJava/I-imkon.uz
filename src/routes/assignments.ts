@@ -64,6 +64,18 @@ async function applyLevelDelta(studentId: string, delta: 1 | -1) {
   );
 }
 
+// `link` ustuni eski bazalarda bo'lmasligi mumkin — bir marta idempotent qo'shamiz.
+let assignmentLinkColumnEnsured = false;
+async function ensureAssignmentLinkColumn() {
+  if (assignmentLinkColumnEnsured) return;
+  try {
+    await pool.query("ALTER TABLE assignments ADD COLUMN IF NOT EXISTS link TEXT");
+    assignmentLinkColumnEnsured = true;
+  } catch (err) {
+    logger.warn("ensureAssignmentLinkColumn failed", { err });
+  }
+}
+
 router.get("/", ah(async (req, res) => {
   const { teacher_id, class_id } = req.query as Record<string, string>;
   if (teacher_id) {
@@ -226,6 +238,7 @@ const AssignmentSchema = z.object({
   deadline:         z.string().nullable().optional(),
   max_score:        z.number().int().positive().default(100),
   file_url:         z.string().url().nullable().optional(),
+  link:             z.string().url().nullable().optional(),
   difficulty_level: z.enum(["low", "medium", "high"]).default("medium"),
   is_for_disabled:  z.boolean().default(false),
 });
@@ -241,13 +254,15 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
   }
   const d = parsed.data;
 
+  await ensureAssignmentLinkColumn();
+
   const uniqueClassIds = [...new Set(d.class_ids)];
   const primaryClassId = uniqueClassIds[0];
   const { rows } = await pool.query(
-    `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, difficulty_level, is_for_disabled)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, link, difficulty_level, is_for_disabled)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
     [req.user!.sub, d.subject_id, primaryClassId, d.title, d.description ?? null,
-      d.deadline ?? null, d.max_score, d.file_url ?? null, d.difficulty_level, d.is_for_disabled]
+      d.deadline ?? null, d.max_score, d.file_url ?? null, d.link ?? null, d.difficulty_level, d.is_for_disabled]
   );
   const assignmentId = rows[0].id as string;
 

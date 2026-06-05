@@ -196,6 +196,7 @@ CREATE TABLE assignments (
   title       TEXT NOT NULL,
   description TEXT,
   file_url    TEXT,
+  link        TEXT,
   deadline    TIMESTAMPTZ,
   max_score   SMALLINT NOT NULL DEFAULT 100 CHECK (max_score > 0),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
