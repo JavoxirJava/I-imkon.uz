@@ -214,12 +214,17 @@ router.get("/:id/subjects-and-classes", async (req, res) => {
       [teacherId]
     ),
     pool.query(
-      `SELECT DISTINCT sub.id, sub.name, ta.school_id, stl.fan_subject_id
+      `SELECT DISTINCT fan.id, fan.name, ta.school_id
        FROM teacher_assignments ta
        JOIN subjects sub ON sub.id = ta.subject_id
        LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
+       JOIN subjects fan ON fan.id = COALESCE(stl.fan_subject_id, sub.id)
        WHERE ta.teacher_id = $1
-       ORDER BY sub.name`,
+         AND (
+           EXISTS (SELECT 1 FROM school_subjects ss WHERE ss.subject_id = fan.id)
+           OR EXISTS (SELECT 1 FROM subject_topic_links stl2 WHERE stl2.fan_subject_id = fan.id)
+         )
+       ORDER BY fan.name`,
       [teacherId]
     ),
     pool.query(
@@ -299,13 +304,18 @@ router.get("/:id/analytics", async (req, res) => {
   });
 });
 
-// GET /teachers/:id/subjects
+// GET /teachers/:id/subjects — faqat mavzular (fan subjectlari emas)
 router.get("/:id/subjects", async (req, res) => {
+  await ensureSubjectTopicLinksTable();
   const { rows } = await pool.query(
-    `SELECT DISTINCT sub.id, sub.name
+    `SELECT DISTINCT sub.id, sub.name,
+            stl.fan_subject_id, fan_sub.name AS fan_subject_name
      FROM teacher_assignments ta
      JOIN subjects sub ON sub.id = ta.subject_id
-     WHERE ta.teacher_id = $1`,
+     INNER JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
+     JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
+     WHERE ta.teacher_id = $1
+     ORDER BY fan_sub.name, sub.name`,
     [req.params.id]
   );
   res.json(rows);
@@ -416,15 +426,20 @@ router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: 
   );
   const subjectId = subjectRows[0].id as string;
 
+  let fanSubjectId: string | null = null;
+  let fanSubjectName: string | null = null;
+
   if (parsed.data.subject_id) {
     const { rows: fanRows } = await pool.query(
-      `SELECT id FROM subjects WHERE id = $1 LIMIT 1`,
+      `SELECT id, name FROM subjects WHERE id = $1 LIMIT 1`,
       [parsed.data.subject_id]
     );
     if (!fanRows[0]) {
       res.status(400).json({ error: "Tanlangan fan topilmadi" });
       return;
     }
+    fanSubjectId = parsed.data.subject_id;
+    fanSubjectName = fanRows[0].name as string;
     await pool.query(
       `INSERT INTO subject_topic_links (topic_subject_id, fan_subject_id)
        VALUES ($1, $2)
@@ -448,7 +463,7 @@ router.post("/:id/subjects", requireRole("teacher", "super_admin"), async (req: 
     [teacherId, schoolId, targetClassIds, subjectId]
   );
 
-  res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length });
+  res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length, fan_subject_id: fanSubjectId, fan_subject_name: fanSubjectName });
 });
 
 // DELETE /teachers/assignments/:schoolId — remove all assignments for teacher in a school

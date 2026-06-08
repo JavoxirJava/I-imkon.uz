@@ -162,12 +162,17 @@ router.get("/:id/subjects-and-classes", async (req, res) => {
        JOIN schools s ON s.id = ta.school_id
        WHERE ta.teacher_id = $1
        ORDER BY s.name`, [teacherId]),
-        pool_1.pool.query(`SELECT DISTINCT sub.id, sub.name, ta.school_id, stl.fan_subject_id
+        pool_1.pool.query(`SELECT DISTINCT fan.id, fan.name, ta.school_id
        FROM teacher_assignments ta
        JOIN subjects sub ON sub.id = ta.subject_id
        LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
+       JOIN subjects fan ON fan.id = COALESCE(stl.fan_subject_id, sub.id)
        WHERE ta.teacher_id = $1
-       ORDER BY sub.name`, [teacherId]),
+         AND (
+           EXISTS (SELECT 1 FROM school_subjects ss WHERE ss.subject_id = fan.id)
+           OR EXISTS (SELECT 1 FROM subject_topic_links stl2 WHERE stl2.fan_subject_id = fan.id)
+         )
+       ORDER BY fan.name`, [teacherId]),
         pool_1.pool.query(`SELECT DISTINCT c.id, c.grade, c.letter, c.school_id
        FROM teacher_assignments ta JOIN classes c ON c.id = ta.class_id
        WHERE ta.teacher_id = $1 ORDER BY c.grade, c.letter`, [teacherId]),
@@ -229,12 +234,17 @@ router.get("/:id/analytics", async (req, res) => {
         total_attempts: attempts.length,
     });
 });
-// GET /teachers/:id/subjects
+// GET /teachers/:id/subjects — faqat mavzular (fan subjectlari emas)
 router.get("/:id/subjects", async (req, res) => {
-    const { rows } = await pool_1.pool.query(`SELECT DISTINCT sub.id, sub.name
+    await ensureSubjectTopicLinksTable();
+    const { rows } = await pool_1.pool.query(`SELECT DISTINCT sub.id, sub.name,
+            stl.fan_subject_id, fan_sub.name AS fan_subject_name
      FROM teacher_assignments ta
      JOIN subjects sub ON sub.id = ta.subject_id
-     WHERE ta.teacher_id = $1`, [req.params.id]);
+     INNER JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
+     JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
+     WHERE ta.teacher_id = $1
+     ORDER BY fan_sub.name, sub.name`, [req.params.id]);
     res.json(rows);
 });
 // POST /teachers/:id/subjects — teacher creates new "mavzu/fan" for own classes
@@ -323,12 +333,16 @@ router.post("/:id/subjects", (0, role_1.requireRole)("teacher", "super_admin"), 
      ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
      RETURNING id, name`, [name]);
     const subjectId = subjectRows[0].id;
+    let fanSubjectId = null;
+    let fanSubjectName = null;
     if (parsed.data.subject_id) {
-        const { rows: fanRows } = await pool_1.pool.query(`SELECT id FROM subjects WHERE id = $1 LIMIT 1`, [parsed.data.subject_id]);
+        const { rows: fanRows } = await pool_1.pool.query(`SELECT id, name FROM subjects WHERE id = $1 LIMIT 1`, [parsed.data.subject_id]);
         if (!fanRows[0]) {
             res.status(400).json({ error: "Tanlangan fan topilmadi" });
             return;
         }
+        fanSubjectId = parsed.data.subject_id;
+        fanSubjectName = fanRows[0].name;
         await pool_1.pool.query(`INSERT INTO subject_topic_links (topic_subject_id, fan_subject_id)
        VALUES ($1, $2)
        ON CONFLICT (topic_subject_id) DO UPDATE
@@ -340,7 +354,7 @@ router.post("/:id/subjects", (0, role_1.requireRole)("teacher", "super_admin"), 
     await pool_1.pool.query(`INSERT INTO teacher_assignments (teacher_id, school_id, class_id, subject_id)
      SELECT $1, $2, unnest($3::uuid[]), $4
      ON CONFLICT (teacher_id, class_id, subject_id) DO NOTHING`, [teacherId, schoolId, targetClassIds, subjectId]);
-    res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length });
+    res.status(201).json({ id: subjectId, name, class_count: targetClassIds.length, fan_subject_id: fanSubjectId, fan_subject_name: fanSubjectName });
 });
 // DELETE /teachers/assignments/:schoolId — remove all assignments for teacher in a school
 router.delete("/assignments/:schoolId", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {

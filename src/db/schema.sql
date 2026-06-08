@@ -101,6 +101,13 @@ CREATE TABLE teacher_assignments (
   UNIQUE (teacher_id, class_id, subject_id)
 );
 
+-- O'qituvchi yaratgan mavzular → ota-fan bog'lanishi
+CREATE TABLE IF NOT EXISTS subject_topic_links (
+  topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+  fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX idx_ta_teacher ON teacher_assignments(teacher_id);
 CREATE INDEX idx_ta_class   ON teacher_assignments(class_id);
 
