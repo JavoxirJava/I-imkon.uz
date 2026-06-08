@@ -22,6 +22,10 @@ async function ensureSubjectTopicLinksTable() {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`
   );
+  // 'link' qiymati eski enum'larda bo'lmasligi mumkin — bir marta idempotent qo'shamiz
+  await pool.query(
+    `DO $$ BEGIN ALTER TYPE content_type ADD VALUE IF NOT EXISTS 'link'; EXCEPTION WHEN others THEN NULL; END $$`
+  );
   subjectTopicLinksEnsured = true;
 }
 
@@ -86,9 +90,9 @@ const LectureSchema = z.object({
   school_id:     z.string().uuid().optional(),
   subject_id:    z.string().uuid(),
   class_id:      z.string().uuid().nullable().optional(),
-  title:         z.string().min(1).max(500),
+  title:         z.string().max(500).optional(),
   description:   z.string().nullable().optional(),
-  content_type:  z.enum(["pdf", "video", "audio", "ppt"]),
+  content_type:  z.enum(["pdf", "video", "audio", "ppt", "link"]),
   file_url:      z.string().url(),
   subtitle_vtt_url: z.string().url().optional(),
   subtitle_source:  z.enum(["manual", "ai"]).optional(),
@@ -176,7 +180,7 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
       resolvedSchoolId,
       d.subject_id,
       d.class_id ?? null,
-      d.title,
+      d.title || "Tashqi havola",
       d.description ?? null,
       d.content_type,
       d.file_url,

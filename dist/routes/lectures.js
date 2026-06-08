@@ -53,6 +53,8 @@ async function ensureSubjectTopicLinksTable() {
       fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+    // 'link' qiymati eski enum'larda bo'lmasligi mumkin — bir marta idempotent qo'shamiz
+    await pool_1.pool.query(`DO $$ BEGIN ALTER TYPE content_type ADD VALUE IF NOT EXISTS 'link'; EXCEPTION WHEN others THEN NULL; END $$`);
     subjectTopicLinksEnsured = true;
 }
 // GET /lectures?class_id=&teacher_id=
@@ -115,9 +117,9 @@ const LectureSchema = zod_1.z.object({
     school_id: zod_1.z.string().uuid().optional(),
     subject_id: zod_1.z.string().uuid(),
     class_id: zod_1.z.string().uuid().nullable().optional(),
-    title: zod_1.z.string().min(1).max(500),
+    title: zod_1.z.string().max(500).optional(),
     description: zod_1.z.string().nullable().optional(),
-    content_type: zod_1.z.enum(["pdf", "video", "audio", "ppt"]),
+    content_type: zod_1.z.enum(["pdf", "video", "audio", "ppt", "link"]),
     file_url: zod_1.z.string().url(),
     subtitle_vtt_url: zod_1.z.string().url().optional(),
     subtitle_source: zod_1.z.enum(["manual", "ai"]).optional(),
@@ -188,7 +190,7 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), (0, asyncHan
         resolvedSchoolId,
         d.subject_id,
         d.class_id ?? null,
-        d.title,
+        d.title || "Tashqi havola",
         d.description ?? null,
         d.content_type,
         d.file_url,

@@ -156,28 +156,31 @@ router.get("/:id/school-assignments", async (req, res) => {
 router.get("/:id/subjects-and-classes", async (req, res) => {
     const teacherId = req.params.id;
     await ensureSubjectTopicLinksTable();
-    const [schoolsRes, subjectsRes, classRes] = await Promise.all([
+    const [schoolsRes, subjectsRes, topicsRes, classRes] = await Promise.all([
         pool_1.pool.query(`SELECT DISTINCT s.id, s.name
        FROM teacher_assignments ta
        JOIN schools s ON s.id = ta.school_id
        WHERE ta.teacher_id = $1
        ORDER BY s.name`, [teacherId]),
-        pool_1.pool.query(`SELECT DISTINCT fan.id, fan.name, ta.school_id
+        pool_1.pool.query(`SELECT id, name,
+         (SELECT school_id FROM teacher_assignments WHERE teacher_id = $1 LIMIT 1) AS school_id
+       FROM subjects
+       WHERE NOT EXISTS (
+         SELECT 1 FROM subject_topic_links WHERE topic_subject_id = subjects.id
+       )
+       ORDER BY name`, [teacherId]),
+        // Teacher's linked topics (mavzular) with their parent fan_subject_id
+        pool_1.pool.query(`SELECT DISTINCT sub.id, sub.name, ta.school_id, stl.fan_subject_id
        FROM teacher_assignments ta
        JOIN subjects sub ON sub.id = ta.subject_id
-       LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
-       JOIN subjects fan ON fan.id = COALESCE(stl.fan_subject_id, sub.id)
+       INNER JOIN subject_topic_links stl ON stl.topic_subject_id = sub.id
        WHERE ta.teacher_id = $1
-         AND (
-           EXISTS (SELECT 1 FROM school_subjects ss WHERE ss.subject_id = fan.id)
-           OR EXISTS (SELECT 1 FROM subject_topic_links stl2 WHERE stl2.fan_subject_id = fan.id)
-         )
-       ORDER BY fan.name`, [teacherId]),
+       ORDER BY sub.name`, [teacherId]),
         pool_1.pool.query(`SELECT DISTINCT c.id, c.grade, c.letter, c.school_id
        FROM teacher_assignments ta JOIN classes c ON c.id = ta.class_id
        WHERE ta.teacher_id = $1 ORDER BY c.grade, c.letter`, [teacherId]),
     ]);
-    res.json({ schools: schoolsRes.rows, subjects: subjectsRes.rows, classes: classRes.rows });
+    res.json({ schools: schoolsRes.rows, subjects: subjectsRes.rows, topics: topicsRes.rows, classes: classRes.rows });
 });
 // GET /teachers/:id/analytics — full analytics for teacher
 router.get("/:id/analytics", async (req, res) => {

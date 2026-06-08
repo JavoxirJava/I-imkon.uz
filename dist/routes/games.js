@@ -39,7 +39,7 @@ router.get("/:id", async (req, res) => {
 });
 const GameSchema = zod_1.z.object({
     title: zod_1.z.string().min(1),
-    template_type: zod_1.z.enum(["word_match", "ordering", "memory"]),
+    template_type: zod_1.z.enum(["word_match", "ordering", "memory", "external"]),
     subject_id: zod_1.z.string().uuid(),
     external_url: zod_1.z.string().url().optional().or(zod_1.z.literal("")),
     content_json: zod_1.z.record(zod_1.z.unknown()).default({}),
