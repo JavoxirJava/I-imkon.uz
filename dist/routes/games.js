@@ -10,16 +10,19 @@ router.use(auth_1.requireAuth);
 router.get("/", async (req, res) => {
     const { teacher_id, class_id } = req.query;
     if (class_id) {
-        const { rows } = await pool_1.pool.query(`SELECT g.*, json_build_object('id', sub.id, 'name', sub.name) AS subjects
+        const { rows } = await pool_1.pool.query(`SELECT g.*,
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics
        FROM games g
        JOIN game_classes gc ON gc.game_id = g.id
-       JOIN subjects sub ON sub.id = g.subject_id
+       LEFT JOIN topics t ON t.id = g.topic_id
        WHERE gc.class_id = $1 ORDER BY g.created_at DESC`, [class_id]);
         res.json(rows);
     }
     else if (teacher_id) {
-        const { rows } = await pool_1.pool.query(`SELECT g.*, json_build_object('id', sub.id, 'name', sub.name) AS subjects FROM games g
-       JOIN subjects sub ON sub.id = g.subject_id
+        const { rows } = await pool_1.pool.query(`SELECT g.*,
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics
+       FROM games g
+       LEFT JOIN topics t ON t.id = g.topic_id
        WHERE g.teacher_id = $1 ORDER BY g.created_at DESC`, [teacher_id]);
         res.json(rows);
     }
@@ -28,9 +31,12 @@ router.get("/", async (req, res) => {
     }
 });
 router.get("/:id", async (req, res) => {
-    const { rows } = await pool_1.pool.query(`SELECT g.*, json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+    const { rows } = await pool_1.pool.query(`SELECT g.*,
+            CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
             COALESCE((SELECT json_agg(gc.class_id) FROM game_classes gc WHERE gc.game_id = g.id), '[]') AS class_ids
-     FROM games g JOIN subjects sub ON sub.id = g.subject_id WHERE g.id = $1`, [req.params.id]);
+     FROM games g
+     LEFT JOIN topics t ON t.id = g.topic_id
+     WHERE g.id = $1`, [req.params.id]);
     if (!rows[0]) {
         res.status(404).json({ error: "Topilmadi" });
         return;
@@ -40,7 +46,7 @@ router.get("/:id", async (req, res) => {
 const GameSchema = zod_1.z.object({
     title: zod_1.z.string().min(1),
     template_type: zod_1.z.enum(["word_match", "ordering", "memory", "external"]),
-    subject_id: zod_1.z.string().uuid(),
+    topic_id: zod_1.z.string().uuid().optional(),
     external_url: zod_1.z.string().url().optional().or(zod_1.z.literal("")),
     content_json: zod_1.z.record(zod_1.z.unknown()).default({}),
     class_ids: zod_1.z.array(zod_1.z.string().uuid()).default([]),
@@ -52,8 +58,8 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, 
         return;
     }
     const d = parsed.data;
-    const { rows } = await pool_1.pool.query(`INSERT INTO games (teacher_id, template_type, subject_id, title, external_url, content_json)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [req.user.sub, d.template_type, d.subject_id, d.title, d.external_url || null, JSON.stringify(d.content_json)]);
+    const { rows } = await pool_1.pool.query(`INSERT INTO games (teacher_id, template_type, topic_id, title, external_url, content_json)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [req.user.sub, d.template_type, d.topic_id ?? null, d.title, d.external_url || null, JSON.stringify(d.content_json)]);
     const gameId = rows[0].id;
     if (d.class_ids.length > 0) {
         await pool_1.pool.query(`INSERT INTO game_classes (game_id, class_id) SELECT $1, unnest($2::uuid[])`, [gameId, d.class_ids]);
@@ -65,15 +71,15 @@ router.delete("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (
     res.json({ ok: true });
 });
 router.put("/:id/subject", (0, role_1.requireRole)("teacher", "super_admin"), async (req, res) => {
-    const parsed = zod_1.z.object({ subject_id: zod_1.z.string().uuid() }).safeParse(req.body);
+    const parsed = zod_1.z.object({ topic_id: zod_1.z.string().uuid() }).safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: parsed.error.errors[0]?.message });
         return;
     }
     const { rows } = await pool_1.pool.query(`UPDATE games
-     SET subject_id = $1
+     SET topic_id = $1
      WHERE id = $2 AND (teacher_id = $3 OR $4 = 'super_admin')
-     RETURNING id`, [parsed.data.subject_id, req.params.id, req.user.sub, req.user.role]);
+     RETURNING id`, [parsed.data.topic_id, req.params.id, req.user.sub, req.user.role]);
     if (!rows[0]) {
         res.status(404).json({ error: "Topilmadi yoki ruxsat yo'q" });
         return;

@@ -10,28 +10,8 @@ import type { AuthRequest } from "../types";
 const router = Router();
 router.use(requireAuth);
 
-// `subject_topic_links` jadvali bir marta (process boshida) tekshiriladi —
-// har bir so'rovda CREATE TABLE IF NOT EXISTS ishlatish keraksiz DB yuk.
-let subjectTopicLinksEnsured = false;
-async function ensureSubjectTopicLinksTable() {
-  if (subjectTopicLinksEnsured) return;
-  await pool.query(
-    `CREATE TABLE IF NOT EXISTS subject_topic_links (
-      topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
-      fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`
-  );
-  // 'link' qiymati eski enum'larda bo'lmasligi mumkin — bir marta idempotent qo'shamiz
-  await pool.query(
-    `DO $$ BEGIN ALTER TYPE content_type ADD VALUE IF NOT EXISTS 'link'; EXCEPTION WHEN others THEN NULL; END $$`
-  );
-  subjectTopicLinksEnsured = true;
-}
-
 // GET /lectures?class_id=&teacher_id=
 router.get("/", ah(async (req, res) => {
-  await ensureSubjectTopicLinksTable();
   const { class_id, teacher_id } = req.query as Record<string, string>;
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -42,17 +22,16 @@ router.get("/", ah(async (req, res) => {
   const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
   const { rows } = await pool.query(
     `SELECT l.*,
-            json_build_object('id', sub.id, 'name', sub.name) AS subjects,
-            CASE WHEN fan_sub.id IS NOT NULL THEN json_build_object('id', fan_sub.id, 'name', fan_sub.name) ELSE NULL END AS fans,
+            CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+            CASE WHEN s.id IS NOT NULL THEN json_build_object('id', s.id, 'name', s.name) ELSE NULL END AS fans,
             CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'source', ls.source))
                FROM lecture_subtitles ls WHERE ls.lecture_id = l.id), '[]'::json
             ) AS lecture_subtitles
      FROM lectures l
-     JOIN subjects sub ON sub.id = l.subject_id
-     LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = l.subject_id
-     LEFT JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
+     LEFT JOIN topics t ON t.id = l.topic_id
+     LEFT JOIN subjects s ON s.id = t.subject_id
      LEFT JOIN classes c ON c.id = l.class_id
      ${where}
      ORDER BY l.created_at DESC`,
@@ -63,20 +42,18 @@ router.get("/", ah(async (req, res) => {
 
 // GET /lectures/:id
 router.get("/:id", ah(async (req, res) => {
-  await ensureSubjectTopicLinksTable();
   const { rows } = await pool.query(
     `SELECT l.*,
-            json_build_object('id', sub.id, 'name', sub.name) AS subjects,
-            CASE WHEN fan_sub.id IS NOT NULL THEN json_build_object('id', fan_sub.id, 'name', fan_sub.name) ELSE NULL END AS fans,
+            CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+            CASE WHEN s.id IS NOT NULL THEN json_build_object('id', s.id, 'name', s.name) ELSE NULL END AS fans,
             CASE WHEN c.id IS NOT NULL THEN json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter) ELSE NULL END AS classes,
             COALESCE(
               (SELECT json_agg(json_build_object('id', ls.id, 'vtt_url', ls.vtt_url, 'language', ls.language, 'source', ls.source))
                FROM lecture_subtitles ls WHERE ls.lecture_id = l.id), '[]'::json
             ) AS lecture_subtitles
      FROM lectures l
-     JOIN subjects sub ON sub.id = l.subject_id
-     LEFT JOIN subject_topic_links stl ON stl.topic_subject_id = l.subject_id
-     LEFT JOIN subjects fan_sub ON fan_sub.id = stl.fan_subject_id
+     LEFT JOIN topics t ON t.id = l.topic_id
+     LEFT JOIN subjects s ON s.id = t.subject_id
      LEFT JOIN classes c ON c.id = l.class_id
      WHERE l.id = $1`,
     [req.params.id]
@@ -88,7 +65,7 @@ router.get("/:id", ah(async (req, res) => {
 // POST /lectures
 const LectureSchema = z.object({
   school_id:     z.string().uuid().optional(),
-  subject_id:    z.string().uuid(),
+  topic_id:      z.string().uuid(),
   class_id:      z.string().uuid().nullable().optional(),
   title:         z.string().max(500).optional(),
   description:   z.string().nullable().optional(),
@@ -108,77 +85,32 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
     return;
   }
   const d = parsed.data;
-  let resolvedSchoolId: string | null = d.school_id ?? null;
-
-  if (d.class_id) {
-    const { rows: classRow } = await pool.query(
-      `SELECT school_id
-       FROM classes
-       WHERE id = $1
-       LIMIT 1`,
-      [d.class_id]
-    );
-    if (!classRow[0]) {
-      res.status(400).json({ error: "Sinf topilmadi" });
-      return;
-    }
-    const classSchoolId = classRow[0].school_id as string;
-    if (resolvedSchoolId && classSchoolId !== resolvedSchoolId) {
-      res.status(400).json({ error: "Sinf tanlangan maktabga tegishli emas" });
-      return;
-    }
-    resolvedSchoolId = classSchoolId;
-  }
 
   if (req.user!.role !== "super_admin") {
-    if (d.class_id) {
-      const { rows: classAccess } = await pool.query(
-        `SELECT 1
-         FROM teacher_assignments
-         WHERE teacher_id = $1 AND class_id = $2 AND subject_id = $3
-         LIMIT 1`,
-        [req.user!.sub, d.class_id, d.subject_id]
-      );
-      if (!classAccess[0]) {
-        res.status(403).json({ error: "Tanlangan sinf sizga biriktirilmagan" });
-        return;
-      }
-    } else if (resolvedSchoolId) {
-      const { rows: subjectAccess } = await pool.query(
-        `SELECT 1
-         FROM teacher_assignments
-         WHERE teacher_id = $1 AND school_id = $2 AND subject_id = $3
-         LIMIT 1`,
-        [req.user!.sub, resolvedSchoolId, d.subject_id]
-      );
-      if (!subjectAccess[0]) {
-        res.status(403).json({ error: "Tanlangan fan sizga biriktirilmagan" });
-        return;
-      }
-    } else {
-      const { rows: subjectAccess } = await pool.query(
-        `SELECT DISTINCT school_id
-         FROM teacher_assignments
-         WHERE teacher_id = $1 AND subject_id = $2
-         ORDER BY school_id
-         LIMIT 1`,
-        [req.user!.sub, d.subject_id]
-      );
-      if (!subjectAccess[0]) {
-        res.status(403).json({ error: "Tanlangan fan sizga biriktirilmagan" });
-        return;
-      }
-      resolvedSchoolId = subjectAccess[0].school_id as string;
+    const { rows: topicAccess } = await pool.query(
+      "SELECT 1 FROM topics WHERE id = $1 AND teacher_id = $2 LIMIT 1",
+      [d.topic_id, req.user!.sub]
+    );
+    if (!topicAccess[0]) {
+      res.status(403).json({ error: "Tanlangan mavzu sizga tegishli emas" });
+      return;
     }
+  }
+
+  let resolvedSchoolId: string | null = d.school_id ?? null;
+  if (d.class_id) {
+    const { rows: classRow } = await pool.query("SELECT school_id FROM classes WHERE id = $1 LIMIT 1", [d.class_id]);
+    if (!classRow[0]) { res.status(400).json({ error: "Sinf topilmadi" }); return; }
+    resolvedSchoolId = classRow[0].school_id as string;
   }
 
   const { rows } = await pool.query(
-    `INSERT INTO lectures (creator_id, school_id, subject_id, class_id, title, description, content_type, file_url)
+    `INSERT INTO lectures (creator_id, school_id, topic_id, class_id, title, description, content_type, file_url)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
     [
       req.user!.sub,
       resolvedSchoolId,
-      d.subject_id,
+      d.topic_id,
       d.class_id ?? null,
       d.title || "Tashqi havola",
       d.description ?? null,
@@ -266,7 +198,7 @@ router.post("/pdf-text", ah(async (req, res) => {
 
 // PUT /lectures/:id
 const UpdateLectureSchema = z.object({
-  subject_id:    z.string().uuid(),
+  topic_id:      z.string().uuid(),
   class_id:      z.string().uuid().nullable().optional(),
   title:         z.string().min(1).max(500),
   description:   z.string().nullable().optional(),
@@ -286,11 +218,11 @@ router.put("/:id", requireRole("teacher", "super_admin"), ah(async (req: AuthReq
 
   const { rows } = await pool.query(
     `UPDATE lectures
-     SET subject_id=$1, class_id=$2, title=$3, description=$4, content_type=$5, file_url=$6
+     SET topic_id=$1, class_id=$2, title=$3, description=$4, content_type=$5, file_url=$6
      WHERE id=$7 AND (creator_id=$8 OR $9='super_admin')
      RETURNING id`,
     [
-      d.subject_id,
+      d.topic_id,
       d.class_id ?? null,
       d.title,
       d.description ?? null,

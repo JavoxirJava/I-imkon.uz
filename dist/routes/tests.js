@@ -35,17 +35,19 @@ router.get("/", async (req, res) => {
     const { teacher_id, class_id } = req.query;
     let rows;
     if (class_id) {
-        ({ rows } = await pool_1.pool.query(`SELECT t.*, sub.name AS subject_name
+        ({ rows } = await pool_1.pool.query(`SELECT t.*, top.name AS topic_name, sub.name AS subject_name
        FROM tests t
        JOIN test_classes tc ON tc.test_id = t.id
-       JOIN subjects sub ON sub.id = t.subject_id
+       LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE tc.class_id = $1
        ORDER BY t.created_at DESC`, [class_id]));
     }
     else if (teacher_id) {
-        ({ rows } = await pool_1.pool.query(`SELECT t.*, sub.name AS subject_name
+        ({ rows } = await pool_1.pool.query(`SELECT t.*, top.name AS topic_name, sub.name AS subject_name
        FROM tests t
-       JOIN subjects sub ON sub.id = t.subject_id
+       LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE t.teacher_id = $1
        ORDER BY t.created_at DESC`, [teacher_id]));
     }
@@ -115,11 +117,7 @@ router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload
         res.status(400).json({ error: err instanceof Error ? err.message : "Fayl o'qishda xatolik" });
         return;
     }
-    const { subject_id, class_ids } = req.body;
-    if (!subject_id) {
-        res.status(400).json({ error: "subject_id kerak" });
-        return;
-    }
+    const { topic_id, class_ids } = req.body;
     let classIds = [];
     try {
         classIds = class_ids ? JSON.parse(class_ids) : [];
@@ -130,11 +128,11 @@ router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload
     }
     try {
         const testId = await withTransaction(async (client) => {
-            const { rows } = await client.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, subject_id, parsed.title, parsed.description,
+            const { rows } = await client.query(`INSERT INTO tests (teacher_id, topic_id, title, description, time_limit, test_type, max_attempts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, topic_id ?? null, parsed.title, parsed.description,
                 parsed.time_limit, parsed.test_type, parsed.max_attempts]);
             const id = rows[0].id;
-            await upsertTestData(client, id, { ...parsed, subject_id, class_ids: classIds, game_ids: [] });
+            await upsertTestData(client, id, { ...parsed, topic_id, class_ids: classIds, game_ids: [] });
             return id;
         });
         res.status(201).json({ id: testId, question_count: parsed.questions.length });
@@ -145,7 +143,7 @@ router.post("/import", (0, role_1.requireRole)("teacher", "super_admin"), upload
 });
 // GET /tests/:id (with questions + options)
 router.get("/:id", async (req, res) => {
-    const { rows: tests } = await pool_1.pool.query(`SELECT t.*, sub.name AS subject_name,
+    const { rows: tests } = await pool_1.pool.query(`SELECT t.*, top.name AS topic_name, sub.name AS subject_name,
             COALESCE(
               (SELECT json_agg(tc.class_id) FROM test_classes tc WHERE tc.test_id = t.id), '[]'
             ) AS class_ids,
@@ -154,7 +152,8 @@ router.get("/:id", async (req, res) => {
                FROM test_games tg JOIN games g ON g.id = tg.game_id WHERE tg.test_id = t.id), '[]'
             ) AS test_games
      FROM tests t
-     JOIN subjects sub ON sub.id = t.subject_id
+     LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
      WHERE t.id = $1`, [req.params.id]);
     if (!tests[0]) {
         res.status(404).json({ error: "Topilmadi" });
@@ -180,7 +179,7 @@ const QuestionSchema = zod_1.z.object({
     options: zod_1.z.array(OptionSchema).default([]),
 });
 const TestSchema = zod_1.z.object({
-    subject_id: zod_1.z.string().uuid(),
+    topic_id: zod_1.z.string().uuid().optional(),
     title: zod_1.z.string().min(1),
     description: zod_1.z.string().nullable().optional(),
     time_limit: zod_1.z.number().int().positive().nullable().optional(),
@@ -227,8 +226,8 @@ router.post("/", (0, role_1.requireRole)("teacher", "super_admin"), async (req, 
     }
     try {
         const testId = await withTransaction(async (client) => {
-            const { rows } = await client.query(`INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
+            const { rows } = await client.query(`INSERT INTO tests (teacher_id, topic_id, title, description, time_limit, test_type, max_attempts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [req.user.sub, parsed.data.topic_id ?? null, parsed.data.title, parsed.data.description ?? null,
                 parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null]);
             const id = rows[0].id;
             await upsertTestData(client, id, parsed.data);
@@ -249,8 +248,8 @@ router.put("/:id", (0, role_1.requireRole)("teacher", "super_admin"), async (req
     }
     try {
         await withTransaction(async (client) => {
-            await client.query(`UPDATE tests SET subject_id=$1, title=$2, description=$3, time_limit=$4, test_type=$5, max_attempts=$6
-         WHERE id=$7 AND (teacher_id=$8 OR $9='super_admin')`, [parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
+            await client.query(`UPDATE tests SET topic_id=$1, title=$2, description=$3, time_limit=$4, test_type=$5, max_attempts=$6
+         WHERE id=$7 AND (teacher_id=$8 OR $9='super_admin')`, [parsed.data.topic_id ?? null, parsed.data.title, parsed.data.description ?? null,
                 parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null,
                 req.params.id, req.user.sub, req.user.role]);
             await upsertTestData(client, req.params.id, parsed.data);

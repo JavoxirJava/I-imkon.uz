@@ -82,7 +82,8 @@ router.get("/", ah(async (req, res) => {
     try {
       const { rows } = await pool.query(
         `SELECT a.*,
-                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+                CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+                CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects,
                 COALESCE(
                   (
                     SELECT json_agg(
@@ -100,7 +101,8 @@ router.get("/", ah(async (req, res) => {
                   END
                 ) AS classes
          FROM assignments a
-         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN topics t ON t.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = t.subject_id
          LEFT JOIN classes c ON c.id = a.class_id
          WHERE a.teacher_id=$1 ORDER BY a.created_at DESC`,
         [teacher_id]
@@ -109,14 +111,16 @@ router.get("/", ah(async (req, res) => {
     } catch {
       const { rows } = await pool.query(
         `SELECT a.*,
-                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+                CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+                CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects,
                 CASE
                   WHEN c.id IS NOT NULL
                     THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
                   ELSE '[]'::json
                 END AS classes
          FROM assignments a
-         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN topics t ON t.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = t.subject_id
          LEFT JOIN classes c ON c.id = a.class_id
          WHERE a.teacher_id=$1 ORDER BY a.created_at DESC`,
         [teacher_id]
@@ -127,7 +131,8 @@ router.get("/", ah(async (req, res) => {
     try {
       const { rows } = await pool.query(
         `SELECT a.*,
-                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+                CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+                CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects,
                 COALESCE(
                   (
                     SELECT json_agg(
@@ -145,7 +150,8 @@ router.get("/", ah(async (req, res) => {
                   END
                 ) AS classes
          FROM assignments a
-         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN topics t ON t.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = t.subject_id
          LEFT JOIN classes c ON c.id = a.class_id
          WHERE (
            a.class_id = $1 OR EXISTS (
@@ -160,14 +166,16 @@ router.get("/", ah(async (req, res) => {
     } catch {
       const { rows } = await pool.query(
         `SELECT a.*,
-                json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+                CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+                CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects,
                 CASE
                   WHEN c.id IS NOT NULL
                     THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
                   ELSE '[]'::json
                 END AS classes
          FROM assignments a
-         JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN topics t ON t.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = t.subject_id
          LEFT JOIN classes c ON c.id = a.class_id
          WHERE a.class_id=$1
          ORDER BY a.created_at DESC`,
@@ -185,7 +193,8 @@ router.get("/:id", ah(async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT a.*,
-              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+                CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects,
               COALESCE(
                 (
                   SELECT json_agg(
@@ -203,7 +212,8 @@ router.get("/:id", ah(async (req, res) => {
                 END
               ) AS classes
        FROM assignments a
-       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN topics t ON t.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = t.subject_id
        LEFT JOIN classes c ON c.id = a.class_id
        WHERE a.id=$1`,
       [req.params.id]
@@ -212,14 +222,16 @@ router.get("/:id", ah(async (req, res) => {
   } catch {
     const result = await pool.query(
       `SELECT a.*,
-              json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
+                CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects,
               CASE
                 WHEN c.id IS NOT NULL
                   THEN json_build_array(json_build_object('id', c.id, 'grade', c.grade, 'letter', c.letter))
                 ELSE '[]'::json
               END AS classes
        FROM assignments a
-       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN topics t ON t.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = t.subject_id
        LEFT JOIN classes c ON c.id = a.class_id
        WHERE a.id=$1`,
       [req.params.id]
@@ -233,7 +245,7 @@ router.get("/:id", ah(async (req, res) => {
 const AssignmentSchema = z.object({
   title:            z.string().min(1),
   description:      z.string().nullable().optional(),
-  subject_id:       z.string().uuid(),
+  topic_id:         z.string().uuid().optional(),
   class_ids:        z.array(z.string().uuid()).min(1),
   deadline:         z.string().nullable().optional(),
   max_score:        z.number().int().positive().default(100),
@@ -259,9 +271,9 @@ router.post("/", requireRole("teacher", "super_admin"), ah(async (req: AuthReque
   const uniqueClassIds = [...new Set(d.class_ids)];
   const primaryClassId = uniqueClassIds[0];
   const { rows } = await pool.query(
-    `INSERT INTO assignments (teacher_id, subject_id, class_id, title, description, deadline, max_score, file_url, link, difficulty_level, is_for_disabled)
+    `INSERT INTO assignments (teacher_id, topic_id, class_id, title, description, deadline, max_score, file_url, link, difficulty_level, is_for_disabled)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-    [req.user!.sub, d.subject_id, primaryClassId, d.title, d.description ?? null,
+    [req.user!.sub, d.topic_id ?? null, primaryClassId, d.title, d.description ?? null,
       d.deadline ?? null, d.max_score, d.file_url ?? null, d.link ?? null, d.difficulty_level, d.is_for_disabled]
   );
   const assignmentId = rows[0].id as string;
@@ -317,7 +329,7 @@ router.delete("/:id", requireRole("teacher", "super_admin"), ah(async (req: Auth
 }));
 
 router.put("/:id/subject", requireRole("teacher", "super_admin"), ah(async (req: AuthRequest, res) => {
-  const parsed = z.object({ subject_id: z.string().uuid() }).safeParse(req.body);
+  const parsed = z.object({ topic_id: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.errors[0]?.message });
     return;
@@ -325,10 +337,10 @@ router.put("/:id/subject", requireRole("teacher", "super_admin"), ah(async (req:
 
   const { rows } = await pool.query(
     `UPDATE assignments
-     SET subject_id = $1
+     SET topic_id = $1
      WHERE id = $2 AND (teacher_id = $3 OR $4 = 'super_admin')
      RETURNING id`,
-    [parsed.data.subject_id, req.params.id, req.user!.sub, req.user!.role]
+    [parsed.data.topic_id, req.params.id, req.user!.sub, req.user!.role]
   );
 
   if (!rows[0]) {

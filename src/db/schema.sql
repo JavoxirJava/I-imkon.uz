@@ -101,15 +101,29 @@ CREATE TABLE teacher_assignments (
   UNIQUE (teacher_id, class_id, subject_id)
 );
 
--- O'qituvchi yaratgan mavzular → ota-fan bog'lanishi
-CREATE TABLE IF NOT EXISTS subject_topic_links (
-  topic_subject_id UUID PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
-  fan_subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 CREATE INDEX idx_ta_teacher ON teacher_assignments(teacher_id);
 CREATE INDEX idx_ta_class   ON teacher_assignments(class_id);
+
+-- =============================================================
+-- 4. MAVZULAR (o'qituvchilar yaratadi, fanlarga biriktiriladi)
+-- =============================================================
+
+CREATE TABLE topics (
+  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name       TEXT NOT NULL,
+  subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  teacher_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_topics_subject ON topics(subject_id);
+CREATE INDEX idx_topics_teacher ON topics(teacher_id);
+
+CREATE TABLE topic_classes (
+  topic_id UUID NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  PRIMARY KEY (topic_id, class_id)
+);
 
 -- =============================================================
 -- 4. O'QUVCHI PROFILLARI
@@ -172,7 +186,7 @@ CREATE TABLE lectures (
   id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   creator_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   school_id    UUID REFERENCES schools(id) ON DELETE CASCADE,
-  subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  topic_id     UUID REFERENCES topics(id) ON DELETE SET NULL,
   class_id     UUID REFERENCES classes(id) ON DELETE CASCADE,
   title        TEXT NOT NULL,
   description  TEXT,
@@ -182,7 +196,7 @@ CREATE TABLE lectures (
 );
 
 CREATE INDEX idx_lectures_creator ON lectures(creator_id);
-CREATE INDEX idx_lectures_subject ON lectures(subject_id);
+CREATE INDEX idx_lectures_topic   ON lectures(topic_id);
 CREATE INDEX idx_lectures_class   ON lectures(class_id);
 
 CREATE TABLE lecture_subtitles (
@@ -200,7 +214,7 @@ CREATE TABLE lecture_subtitles (
 CREATE TABLE assignments (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   teacher_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  subject_id  UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  topic_id    UUID REFERENCES topics(id) ON DELETE SET NULL,
   class_id    UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
   title       TEXT NOT NULL,
   description TEXT,
@@ -246,7 +260,7 @@ CREATE TABLE assignment_submissions (
 CREATE TABLE tests (
   id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   teacher_id   UUID REFERENCES users(id) ON DELETE CASCADE,
-  subject_id   UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  topic_id     UUID REFERENCES topics(id) ON DELETE SET NULL,
   title        TEXT NOT NULL,
   description  TEXT,
   time_limit   SMALLINT CHECK (time_limit > 0),
@@ -256,7 +270,7 @@ CREATE TABLE tests (
 );
 
 CREATE INDEX idx_tests_teacher ON tests(teacher_id);
-CREATE INDEX idx_tests_subject ON tests(subject_id);
+CREATE INDEX idx_tests_topic   ON tests(topic_id);
 
 CREATE TABLE test_classes (
   test_id  UUID NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
@@ -317,7 +331,7 @@ CREATE TABLE games (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   teacher_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   template_type game_template NOT NULL,
-  subject_id    UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  topic_id      UUID REFERENCES topics(id) ON DELETE SET NULL,
   class_id      UUID REFERENCES classes(id) ON DELETE CASCADE,
   title         TEXT NOT NULL,
   external_url  TEXT,

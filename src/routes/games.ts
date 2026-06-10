@@ -12,18 +12,21 @@ router.get("/", async (req, res) => {
   const { teacher_id, class_id } = req.query as Record<string, string>;
   if (class_id) {
     const { rows } = await pool.query(
-      `SELECT g.*, json_build_object('id', sub.id, 'name', sub.name) AS subjects
+      `SELECT g.*,
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics
        FROM games g
        JOIN game_classes gc ON gc.game_id = g.id
-       JOIN subjects sub ON sub.id = g.subject_id
+       LEFT JOIN topics t ON t.id = g.topic_id
        WHERE gc.class_id = $1 ORDER BY g.created_at DESC`,
       [class_id]
     );
     res.json(rows);
   } else if (teacher_id) {
     const { rows } = await pool.query(
-      `SELECT g.*, json_build_object('id', sub.id, 'name', sub.name) AS subjects FROM games g
-       JOIN subjects sub ON sub.id = g.subject_id
+      `SELECT g.*,
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics
+       FROM games g
+       LEFT JOIN topics t ON t.id = g.topic_id
        WHERE g.teacher_id = $1 ORDER BY g.created_at DESC`,
       [teacher_id]
     );
@@ -35,9 +38,12 @@ router.get("/", async (req, res) => {
 
 router.get("/:id", async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT g.*, json_build_object('id', sub.id, 'name', sub.name) AS subjects,
+    `SELECT g.*,
+            CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'subject_id', t.subject_id) ELSE NULL END AS topics,
             COALESCE((SELECT json_agg(gc.class_id) FROM game_classes gc WHERE gc.game_id = g.id), '[]') AS class_ids
-     FROM games g JOIN subjects sub ON sub.id = g.subject_id WHERE g.id = $1`,
+     FROM games g
+     LEFT JOIN topics t ON t.id = g.topic_id
+     WHERE g.id = $1`,
     [req.params.id]
   );
   if (!rows[0]) { res.status(404).json({ error: "Topilmadi" }); return; }
@@ -47,7 +53,7 @@ router.get("/:id", async (req, res) => {
 const GameSchema = z.object({
   title:         z.string().min(1),
   template_type: z.enum(["word_match", "ordering", "memory", "external"]),
-  subject_id:    z.string().uuid(),
+  topic_id:      z.string().uuid().optional(),
   external_url:  z.string().url().optional().or(z.literal("")),
   content_json:  z.record(z.unknown()).default({}),
   class_ids:     z.array(z.string().uuid()).default([]),
@@ -59,9 +65,9 @@ router.post("/", requireRole("teacher", "super_admin"), async (req: AuthRequest,
   const d = parsed.data;
 
   const { rows } = await pool.query(
-    `INSERT INTO games (teacher_id, template_type, subject_id, title, external_url, content_json)
+    `INSERT INTO games (teacher_id, template_type, topic_id, title, external_url, content_json)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [req.user!.sub, d.template_type, d.subject_id, d.title, d.external_url || null, JSON.stringify(d.content_json)]
+    [req.user!.sub, d.template_type, d.topic_id ?? null, d.title, d.external_url || null, JSON.stringify(d.content_json)]
   );
   const gameId = rows[0].id;
   if (d.class_ids.length > 0) {
@@ -82,15 +88,15 @@ router.delete("/:id", requireRole("teacher", "super_admin"), async (req: AuthReq
 });
 
 router.put("/:id/subject", requireRole("teacher", "super_admin"), async (req: AuthRequest, res) => {
-  const parsed = z.object({ subject_id: z.string().uuid() }).safeParse(req.body);
+  const parsed = z.object({ topic_id: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.errors[0]?.message }); return; }
 
   const { rows } = await pool.query(
     `UPDATE games
-     SET subject_id = $1
+     SET topic_id = $1
      WHERE id = $2 AND (teacher_id = $3 OR $4 = 'super_admin')
      RETURNING id`,
-    [parsed.data.subject_id, req.params.id, req.user!.sub, req.user!.role]
+    [parsed.data.topic_id, req.params.id, req.user!.sub, req.user!.role]
   );
   if (!rows[0]) { res.status(404).json({ error: "Topilmadi yoki ruxsat yo'q" }); return; }
   res.json({ ok: true });

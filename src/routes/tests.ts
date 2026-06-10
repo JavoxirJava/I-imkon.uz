@@ -35,19 +35,21 @@ router.get("/", async (req, res) => {
   let rows;
   if (class_id) {
     ({ rows } = await pool.query(
-      `SELECT t.*, sub.name AS subject_name
+      `SELECT t.*, top.name AS topic_name, sub.name AS subject_name
        FROM tests t
        JOIN test_classes tc ON tc.test_id = t.id
-       JOIN subjects sub ON sub.id = t.subject_id
+       LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE tc.class_id = $1
        ORDER BY t.created_at DESC`,
       [class_id]
     ));
   } else if (teacher_id) {
     ({ rows } = await pool.query(
-      `SELECT t.*, sub.name AS subject_name
+      `SELECT t.*, top.name AS topic_name, sub.name AS subject_name
        FROM tests t
-       JOIN subjects sub ON sub.id = t.subject_id
+       LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE t.teacher_id = $1
        ORDER BY t.created_at DESC`,
       [teacher_id]
@@ -116,8 +118,7 @@ router.post("/import", requireRole("teacher", "super_admin"), upload.single("fil
     res.status(400).json({ error: err instanceof Error ? err.message : "Fayl o'qishda xatolik" });
     return;
   }
-  const { subject_id, class_ids } = req.body as { subject_id?: string; class_ids?: string };
-  if (!subject_id) { res.status(400).json({ error: "subject_id kerak" }); return; }
+  const { topic_id, class_ids } = req.body as { topic_id?: string; class_ids?: string };
   let classIds: string[] = [];
   try {
     classIds = class_ids ? JSON.parse(class_ids) : [];
@@ -128,13 +129,13 @@ router.post("/import", requireRole("teacher", "super_admin"), upload.single("fil
   try {
     const testId = await withTransaction(async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
+        `INSERT INTO tests (teacher_id, topic_id, title, description, time_limit, test_type, max_attempts)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [req.user!.sub, subject_id, parsed.title, parsed.description,
+        [req.user!.sub, topic_id ?? null, parsed.title, parsed.description,
          parsed.time_limit, parsed.test_type, parsed.max_attempts]
       );
       const id = rows[0].id;
-      await upsertTestData(client, id, { ...parsed, subject_id, class_ids: classIds, game_ids: [] });
+      await upsertTestData(client, id, { ...parsed, topic_id, class_ids: classIds, game_ids: [] });
       return id;
     });
     res.status(201).json({ id: testId, question_count: parsed.questions.length });
@@ -144,7 +145,7 @@ router.post("/import", requireRole("teacher", "super_admin"), upload.single("fil
 // GET /tests/:id (with questions + options)
 router.get("/:id", async (req, res) => {
   const { rows: tests } = await pool.query(
-    `SELECT t.*, sub.name AS subject_name,
+    `SELECT t.*, top.name AS topic_name, sub.name AS subject_name,
             COALESCE(
               (SELECT json_agg(tc.class_id) FROM test_classes tc WHERE tc.test_id = t.id), '[]'
             ) AS class_ids,
@@ -153,7 +154,8 @@ router.get("/:id", async (req, res) => {
                FROM test_games tg JOIN games g ON g.id = tg.game_id WHERE tg.test_id = t.id), '[]'
             ) AS test_games
      FROM tests t
-     JOIN subjects sub ON sub.id = t.subject_id
+     LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
      WHERE t.id = $1`,
     [req.params.id]
   );
@@ -184,7 +186,7 @@ const QuestionSchema = z.object({
   options: z.array(OptionSchema).default([]),
 });
 const TestSchema = z.object({
-  subject_id:   z.string().uuid(),
+  topic_id:     z.string().uuid().optional(),
   title:        z.string().min(1),
   description:  z.string().nullable().optional(),
   time_limit:   z.number().int().positive().nullable().optional(),
@@ -248,9 +250,9 @@ router.post("/", requireRole("teacher", "super_admin"), async (req: AuthRequest,
   try {
     const testId = await withTransaction(async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO tests (teacher_id, subject_id, title, description, time_limit, test_type, max_attempts)
+        `INSERT INTO tests (teacher_id, topic_id, title, description, time_limit, test_type, max_attempts)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [req.user!.sub, parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
+        [req.user!.sub, parsed.data.topic_id ?? null, parsed.data.title, parsed.data.description ?? null,
          parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null]
       );
       const id = rows[0].id;
@@ -269,9 +271,9 @@ router.put("/:id", requireRole("teacher", "super_admin"), async (req: AuthReques
   try {
     await withTransaction(async (client) => {
       await client.query(
-        `UPDATE tests SET subject_id=$1, title=$2, description=$3, time_limit=$4, test_type=$5, max_attempts=$6
+        `UPDATE tests SET topic_id=$1, title=$2, description=$3, time_limit=$4, test_type=$5, max_attempts=$6
          WHERE id=$7 AND (teacher_id=$8 OR $9='super_admin')`,
-        [parsed.data.subject_id, parsed.data.title, parsed.data.description ?? null,
+        [parsed.data.topic_id ?? null, parsed.data.title, parsed.data.description ?? null,
          parsed.data.time_limit ?? null, parsed.data.test_type, parsed.data.max_attempts ?? null,
          req.params.id, req.user!.sub, req.user!.role]
       );

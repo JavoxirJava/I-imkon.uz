@@ -20,6 +20,7 @@ import subjectsRouter    from "./routes/subjects";
 import classesRouter     from "./routes/classes";
 import schoolsRouter     from "./routes/schools";
 import leaderboardRouter from "./routes/leaderboard";
+import topicsRouter      from "./routes/topics";
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.use("/games",       gamesRouter);
 app.use("/books",       booksRouter);
 app.use("/assignments", assignmentsRouter);
 app.use("/subjects",    subjectsRouter);
+app.use("/topics",      topicsRouter);
 app.use("/classes",     classesRouter);
 app.use("/schools",     schoolsRouter);
 app.use("/leaderboard", leaderboardRouter);
