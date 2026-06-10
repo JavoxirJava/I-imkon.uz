@@ -116,7 +116,8 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
         try {
             const result = await pool_1.pool.query(`SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
          FROM assignments a
-         LEFT JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN topics top ON top.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = top.subject_id
          WHERE ${classMatchSql}
            AND (
              COALESCE(a.difficulty_level::text, 'low') = ANY($2::text[])
@@ -129,7 +130,8 @@ router.get("/me/assignments", (0, role_1.requireRole)("student"), (0, asyncHandl
             // Legacy fallback: difficulty/is_for_disabled columns bo'lmasa ham class bo'yicha topshiriqlar chiqsin.
             const result = await pool_1.pool.query(`SELECT a.*, a.deadline AS due_date, CASE WHEN sub.id IS NOT NULL THEN json_build_object('id', sub.id, 'name', sub.name) ELSE NULL END AS subjects
          FROM assignments a
-         LEFT JOIN subjects sub ON sub.id = a.subject_id
+         LEFT JOIN topics top ON top.id = a.topic_id
+         LEFT JOIN subjects sub ON sub.id = top.subject_id
          WHERE ${classMatchSql}
          ORDER BY a.created_at DESC`, [profile.class_id]);
             return result.rows;
@@ -170,7 +172,9 @@ router.get("/me/dashboard", (0, role_1.requireRole)("student"), async (req, res)
     const [lecturesRes, testClassesRes, attemptsRes] = await Promise.all([
         classId
             ? pool_1.pool.query(`SELECT l.id, l.title, l.content_type, json_build_object('name', sub.name) AS subjects
-           FROM lectures l LEFT JOIN subjects sub ON sub.id = l.subject_id
+           FROM lectures l
+           LEFT JOIN topics t ON t.id = l.topic_id
+           LEFT JOIN subjects sub ON sub.id = t.subject_id
            WHERE l.class_id = $1 ORDER BY l.created_at DESC LIMIT 4`, [classId])
             : Promise.resolve({ rows: [] }),
         classId
@@ -201,10 +205,11 @@ router.get("/me/tests", (0, role_1.requireRole)("student"), async (req, res) => 
         return;
     }
     const [testsRes, attemptsRes] = await Promise.all([
-        pool_1.pool.query(`SELECT t.id, t.subject_id, t.title, t.description, t.test_type, t.time_limit, t.max_attempts,
+        pool_1.pool.query(`SELECT t.id, t.topic_id, t.title, t.description, t.test_type, t.time_limit, t.max_attempts,
               json_build_object('id', sub.id, 'name', sub.name) AS subjects
        FROM tests t
-       JOIN subjects sub ON sub.id = t.subject_id
+       LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        JOIN test_classes tc ON tc.test_id = t.id
        WHERE tc.class_id = $1
        ORDER BY t.created_at DESC`, [classId]),
@@ -232,12 +237,21 @@ router.get("/me/subjects", (0, role_1.requireRole)("student"), async (req, res) 
         return;
     }
     const [lecRes, testRes] = await Promise.all([
-        pool_1.pool.query(`SELECT sub.id, sub.name, COUNT(l.id) AS lecture_count
-       FROM subjects sub LEFT JOIN lectures l ON l.subject_id = sub.id AND l.class_id = $1
-       GROUP BY sub.id, sub.name`, [classId]),
-        pool_1.pool.query(`SELECT sub.id, COUNT(t.id) AS test_count
+        pool_1.pool.query(`SELECT sub.id, sub.name, COUNT(DISTINCT l.id) AS lecture_count
        FROM subjects sub
-       LEFT JOIN tests t ON t.subject_id = sub.id
+       LEFT JOIN topics top ON top.subject_id = sub.id
+       LEFT JOIN lectures l ON l.topic_id = top.id
+         AND (
+           l.class_id = $1
+           OR (l.class_id IS NULL AND EXISTS (
+             SELECT 1 FROM topic_classes tc WHERE tc.topic_id = top.id AND tc.class_id = $1
+           ))
+         )
+       GROUP BY sub.id, sub.name`, [classId]),
+        pool_1.pool.query(`SELECT sub.id, COUNT(DISTINCT t.id) AS test_count
+       FROM subjects sub
+       LEFT JOIN topics top ON top.subject_id = sub.id
+       LEFT JOIN tests t ON t.topic_id = top.id
          AND t.id IN (SELECT test_id FROM test_classes WHERE class_id = $1)
        GROUP BY sub.id`, [classId]),
     ]);
@@ -268,21 +282,24 @@ router.get("/me/results", (0, role_1.requireRole)("student"), async (req, res) =
               t.title, t.test_type, sub.name AS subject_name
        FROM test_attempts ta
        JOIN tests t ON t.id = ta.test_id
-       JOIN subjects sub ON sub.id = t.subject_id
+       LEFT JOIN topics top ON top.id = t.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE ta.student_id = $1 AND ta.finished_at IS NOT NULL
        ORDER BY ta.finished_at DESC LIMIT 30`, [studentId]),
         pool_1.pool.query(`SELECT ga.id, ga.score, ga.duration, ga.completed_at,
               g.title, sub.name AS subject_name
        FROM game_attempts ga
        JOIN games g ON g.id = ga.game_id
-       JOIN subjects sub ON sub.id = g.subject_id
+       LEFT JOIN topics top ON top.id = g.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE ga.student_id = $1
        ORDER BY ga.completed_at DESC LIMIT 20`, [studentId]),
         pool_1.pool.query(`SELECT asub.id, asub.score, asub.submitted_at, asub.teacher_comment,
               a.title, a.max_score, sub.name AS subject_name
        FROM assignment_submissions asub
        JOIN assignments a ON a.id = asub.assignment_id
-       JOIN subjects sub ON sub.id = a.subject_id
+       LEFT JOIN topics top ON top.id = a.topic_id
+       LEFT JOIN subjects sub ON sub.id = top.subject_id
        WHERE asub.student_id = $1
        ORDER BY asub.submitted_at DESC LIMIT 20`, [studentId]),
     ]);

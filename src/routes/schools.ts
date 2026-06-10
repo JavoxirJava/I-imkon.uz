@@ -187,10 +187,10 @@ router.get("/my-analytics", requireRole("director"), async (req: AuthRequest, re
     : null;
 
   const scoreDistribution = [
-    { label: "A'lo (86–100%)", min: 86, max: 100 },
-    { label: "Yaxshi (71–85%)", min: 71, max: 85 },
-    { label: "Qoniqarli (56–70%)", min: 56, max: 70 },
-    { label: "Qoniqarsiz (0–55%)", min: 0, max: 55 },
+    { label: "5 — A'lo (86–100%)", min: 86, max: 100 },
+    { label: "4 — Yaxshi (65–85%)", min: 65, max: 85 },
+    { label: "3 — Qoniqarli (30–64%)", min: 30, max: 64 },
+    { label: "Qoniqarsiz (0–29%)", min: 0, max: 29 },
   ].map((g) => ({
     ...g,
     count: attempts.filter((a) => a.score >= g.min && a.score <= g.max).length,
